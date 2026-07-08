@@ -10,20 +10,32 @@ services:
     ports: ["5432:5432"]
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axisclip -d axisclip"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7
     container_name: axisclip_redis
     restart: always
     ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   backend:
     build: ./backend
     container_name: axis_clip_backend
     ports: ["8000:8000"]
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./storage:/storage
@@ -31,10 +43,12 @@ services:
   worker:
     build: ./backend
     container_name: axisclip_worker
-    command: rq worker default
+    command: rq worker videos --url redis://redis:6379
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     volumes:
       - ./backend:/app
       - ./storage:/storage
@@ -45,6 +59,8 @@ services:
     ports: ["5173:5173"]
     volumes:
       - ./frontend:/app
+      - node_modules:/app/node_modules
 
 volumes:
   postgres-data:
+  node_modules:

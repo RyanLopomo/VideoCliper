@@ -1,20 +1,20 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from app.db.dependencies import get_db
 from app.models.project import Project
-from app.shemas.project import ( ProjectCreate, ProjectResponse)
+from app.schemas.project import ProjectCreate, ProjectResponse
 
-router = APIRouter( prefix = "/projects", tags=["projects"])
+router = APIRouter(prefix="/projects", tags=["projects"])
+
 
 @router.post("", response_model=ProjectResponse)
-
-def create_project(data: ProjectCreate, db: Session = Depends(get_db)):
-
-    project = Project( name=data.name)
+def create_project(data: ProjectCreate | None = Body(default=None), db: Session = Depends(get_db)):
+    if data is None:
+        data = ProjectCreate(name="")
+    project = Project(name=data.name)
     db.add(project)
     db.commit()
     db.refresh(project)
-
     return project
 
 @router.get(

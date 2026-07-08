@@ -10,3 +10,4 @@ yt-dlp
 faster-whisper
 pydantic
 pydantic-settings
+ffmpeg-python
