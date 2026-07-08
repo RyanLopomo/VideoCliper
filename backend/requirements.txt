@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+alembic
+redis
+rq
+python-multipart
+yt-dlp
+faster-whisper
+pydantic
+pydantic-settings

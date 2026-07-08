@@ -1,0 +1,50 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: axisclip_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: axisclip
+      POSTGRES_USER: axisclip
+      POSTGRES_PASSWORD: axisclip
+    ports: ["5432:5432"]
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: axisclip_redis
+    restart: always
+    ports: ["6379:6379"]
+
+  backend:
+    build: ./backend
+    container_name: axis_clip_backend
+    ports: ["8000:8000"]
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+
+  worker:
+    build: ./backend
+    container_name: axisclip_worker
+    command: rq worker default
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./backend:/app
+      - ./storage:/storage
+
+  frontend:
+    build: ./frontend
+    container_name: axisclip_frontend
+    ports: ["5173:5173"]
+    volumes:
+      - ./frontend:/app
+
+volumes:
+  postgres-data:
