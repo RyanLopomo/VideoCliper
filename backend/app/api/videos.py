@@ -13,11 +13,18 @@ from app.workers.jobs import process_video
 router = APIRouter(prefix="/videos", tags=["videos"])
 
 
+@router.get("", response_model=list[VideoResponse])
+def list_videos(db: Session = Depends(get_db)):
+    return db.query(Video).all()
+
+
 @router.get("/{video_id}/status")
 def get_video_status(video_id: int, db: Session = Depends(get_db)):
     video = db.query(Video).filter(Video.id == video_id).first()
     if not video:
-        raise HTTPException(status_code=404, detail="Video not found")
+        existing = [v.id for v in db.query(Video).limit(20).all()]
+        detail = {"error": "Video not found", "available_video_ids": existing}
+        raise HTTPException(status_code=404, detail=detail)
     return {
         "id": video.id,
         "status": video.status,
@@ -31,9 +38,15 @@ async def upload_video(
     file: UploadFile | None = File(default=None),
     db: Session = Depends(get_db),
 ):
+    print(f"upload called for project_id={project_id}")
+    # Log content-length for debugging
+    # Note: FastAPI provides request object via dependency injection only in path operation
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
+        # Help the client by returning some existing project ids
+        existing = [p.id for p in db.query(Project).limit(10).all()]
+        detail = {"error": "Project not found", "available_project_ids": existing}
+        raise HTTPException(status_code=404, detail=detail)
 
     if file is None:
         raise HTTPException(status_code=422, detail="A file is required")

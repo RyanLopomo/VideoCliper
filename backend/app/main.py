@@ -4,6 +4,8 @@ from app.api.projects import router as projects_router
 from app.api.videos import router as videos_router
 
 from app.db.database import Base, engine
+import time
+from fastapi import Request
 
 app = FastAPI(title="AxisClip API")
 
@@ -16,6 +18,20 @@ app.add_middleware(
 )
 
 Base.metadata.create_all(bind=engine)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    try:
+        content_length = request.headers.get("content-length")
+    except Exception:
+        content_length = None
+    print(f"--> {request.method} {request.url.path} content-length={content_length}")
+    response = await call_next(request)
+    duration = (time.time() - start) * 1000
+    print(f"<-- {request.method} {request.url.path} status={response.status_code} time={duration:.1f}ms")
+    return response
 
 app.include_router(videos_router)
 app.include_router(projects_router)

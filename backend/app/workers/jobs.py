@@ -23,13 +23,7 @@ def process_video(video_id: int):
         if not video_obj:
             return
 
-        update_status(db, video_obj, "FINDING_CLIPS")
-        clips = find_clips(transcript_path)
-        print(clips)
-
         update_status(db, video_obj, "PROCESSING")
-        time.sleep(2)
-        update_status(db, video_obj, "TRANSCRIBING")
 
         video_path = Path(video_obj.file_path)
         project_folder = video_path.parent
@@ -39,13 +33,16 @@ def process_video(video_id: int):
         extract_audio(str(video_path), str(audio_path))
         transcribe_audio(str(audio_path), str(transcript_path))
 
-        time.sleep(3)
-        update_status(db, video_obj, "FINDING_CLIPS")
-        time.sleep(3)
+        time.sleep(2)
+        update_status(db, video_obj, "TRANSCRIBING")
+
+        time.sleep(2)
         update_status(db, video_obj, "GENERATING_CLIPS")
-        time.sleep(3)
+
+        time.sleep(2)
         update_status(db, video_obj, "GENERATING_SUBTITLES")
-        time.sleep(3)
+
+        time.sleep(2)
         update_status(db, video_obj, "COMPLETED")
 
     except Exception as e:
