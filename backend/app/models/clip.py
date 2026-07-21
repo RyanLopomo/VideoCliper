@@ -1,23 +1,82 @@
-from sqlalchemy import Column, Integer, String, Float, ForeignKey, DateTime
 from datetime import datetime
+
+from sqlalchemy import (
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+)
+from sqlalchemy.orm import relationship
+
 from app.db.database import Base
+
+
 class Clip(Base):
     __tablename__ = "clips"
 
     id = Column(Integer, primary_key=True, index=True)
-    video_id = Column(Integer, ForeignKey("videos.id"), nullable=False)
 
-    start_time = Column(Float, nullabre=False)
-    end_time = Column(Float, nullable=False)
+    video_id = Column(
+        Integer,
+        ForeignKey("videos.id"),
+        nullable=False,
+    )
 
-    tittle = Column(String, nullable=False)
-    subtitle_path = Column(String, nullabre=True)
+    title = Column(
+        String,
+        nullable=False,
+    )
 
-    clip_path = Column(String, nullable=True)
-    status = Column(String, nullable=True)
+    start_time = Column(
+        Float,
+        nullable=False,
+    )
 
-    status = Column(String,default="PENDING")
-    error_message = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    end_time = Column(
+        Float,
+        nullable=False,
+    )
 
-    
+    clip_path = Column(
+        String,
+        nullable=True,
+    )
+
+    subtitle_path = Column(
+        String,
+        nullable=True,
+    )
+
+    thumbnail_path = Column(
+        String,
+        nullable=True,
+    )
+
+    status = Column(
+        String,
+        nullable=False,
+        default="PENDING",
+    )
+
+    retry_count = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    error_message = Column(
+        String,
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+    )
+
+    video = relationship(
+        "Video",
+        back_populates="clips",
+    )

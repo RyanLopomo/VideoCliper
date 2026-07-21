@@ -1,52 +1,49 @@
-import time
-from pathlib import Path
+﻿import traceback
 
 from app.db.database import SessionLocal
-from app import models
-from app.services.audio import extract_audio
-from app.services.transcriber import transcribe_audio
 
+from app.pipeline.pipeline import VideoPipeline
 
-def update_status(db, video_obj, status, error=None):
-    video_obj.status = status
-    video_obj.error_message = error
-    db.add(video_obj)
-    db.commit()
+from app.utils.pipeline_logger import log
 
 
 def process_video(video_id: int):
+
     db = SessionLocal()
-    video_obj = None
+
+    log(
+        "WORKER",
+        f"Iniciando processamento do vídeo {video_id}"
+    )
 
     try:
-        video_obj = db.query(models.Video).filter(models.Video.id == video_id).first()
-        if not video_obj:
-            return
 
-        update_status(db, video_obj, "PROCESSING")
+        pipeline = VideoPipeline(
+            db=db,
+            video_id=video_id,
+        )
 
-        video_path = Path(video_obj.file_path)
-        project_folder = video_path.parent
-        audio_path = project_folder / "audio.wav"
-        transcript_path = project_folder / "transcript.json"
+        pipeline.run()
 
-        extract_audio(str(video_path), str(audio_path))
-        transcribe_audio(str(audio_path), str(transcript_path))
+        log(
+            "WORKER",
+            f"Vídeo {video_id} concluído."
+        )
 
-        time.sleep(2)
-        update_status(db, video_obj, "TRANSCRIBING")
+    except Exception:
 
-        time.sleep(2)
-        update_status(db, video_obj, "GENERATING_CLIPS")
+        log(
+            "WORKER",
+            traceback.format_exc()
+        )
 
-        time.sleep(2)
-        update_status(db, video_obj, "GENERATING_SUBTITLES")
+        raise
 
-        time.sleep(2)
-        update_status(db, video_obj, "COMPLETED")
-
-    except Exception as e:
-        if video_obj:
-            update_status(db, video_obj, "FAILED", str(e))
     finally:
+
         db.close()
+
+        log(
+            "WORKER",
+            "Sessão do banco encerrada."
+        )
