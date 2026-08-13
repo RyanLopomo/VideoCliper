@@ -17,6 +17,7 @@ from app.services.thumbnail import generate_thumbnail
 
 from app.core.retry import retry
 from app.utils.pipeline_logger import log
+from app.youtube.integration import publish_completed_clip
 
 class VideoPipeline:
 
@@ -233,4 +234,9 @@ class VideoPipeline:
         recovery.update_last_clip(
             self.ctx,
             clip_index,
+        )
+
+        publish_completed_clip(
+            self.ctx.db,
+            clip,
         )

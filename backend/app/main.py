@@ -6,8 +6,20 @@ from app.api.clips import router as clips_router
 from app.db.migrations import run_migrations
 
 from app.db.database import Base, engine
+from app.db.database import SessionLocal
+from app.models import publication
+from app.models.publication import Publication
+from app.models.clip import Clip
+from app.workers.heartbeat import (
+    last_recovery_heartbeat,
+    last_worker_heartbeat,
+)
+from app.youtube.config import worker_stale_timeout
 import time
 from fastapi import Request
+from datetime import datetime, timedelta
+from sqlalchemy import text
+from app.queue.redis_connectiuon import redis_conn
 
 app = FastAPI(title="AxisClip API")
 
@@ -42,4 +54,61 @@ async def log_requests(request: Request, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    db = SessionLocal()
+
+    try:
+        db.execute(text("SELECT 1"))
+        redis_status = "ok" if redis_conn.ping() else "error"
+        counts = {
+            status.lower(): db.query(Publication)
+            .filter(Publication.status == status)
+            .count()
+            for status in ["PENDING", "WAITING_RETRY", "UPLOADING", "PROCESSING", "FAILED", "PUBLISHED"]
+        }
+
+        worker_heartbeat = last_worker_heartbeat()
+        recovery_heartbeat = last_recovery_heartbeat()
+        worker_status = "UNKNOWN"
+
+        if worker_heartbeat:
+            worker_status = (
+                "ACTIVE"
+                if worker_heartbeat >= datetime.utcnow() - timedelta(seconds=worker_stale_timeout())
+                else "STALE"
+            )
+
+        published = counts.get("published", 0)
+        failed = counts.get("failed", 0)
+        avg_seconds = None
+        durations = []
+        for item in db.query(Publication).filter(Publication.published_at.isnot(None)).all():
+            if item.created_at and item.published_at:
+                durations.append((item.published_at - item.created_at).total_seconds())
+        if durations:
+            avg_seconds = round(sum(durations) / len(durations), 2)
+
+        return {
+            "status": "ok",
+            "application": "ok",
+            "database": "ok",
+            "redis": redis_status,
+            "worker": worker_status,
+            "heartbeat": {
+                "worker": worker_heartbeat.isoformat() if worker_heartbeat else None,
+                "recovery": recovery_heartbeat.isoformat() if recovery_heartbeat else None,
+            },
+            "worker_status": worker_status,
+            "last_worker_heartbeat": worker_heartbeat.isoformat() if worker_heartbeat else None,
+            "last_recovery_heartbeat": recovery_heartbeat.isoformat() if recovery_heartbeat else None,
+            "metrics": {
+                "clips_generated": db.query(Clip).count(),
+                "publications": db.query(Publication).count(),
+                "publications_success": published,
+                "failures": failed,
+                "retries": sum(item.attempts or 0 for item in db.query(Publication).all()),
+                "avg_publication_seconds": avg_seconds,
+            },
+            **counts,
+        }
+    finally:
+        db.close()

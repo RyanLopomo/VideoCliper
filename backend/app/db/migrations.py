@@ -47,6 +47,29 @@ def run_migrations():
                 ADD COLUMN IF NOT EXISTS title VARCHAR
             """))
 
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS publications (
+                    id SERIAL PRIMARY KEY,
+                    clip_id INTEGER NOT NULL REFERENCES clips(id),
+                    platform VARCHAR NOT NULL DEFAULT 'YOUTUBE',
+                    status VARCHAR NOT NULL DEFAULT 'PENDING',
+                    error_type VARCHAR,
+                    error_details TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_retry TIMESTAMP,
+                    platform_post_id VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    published_at TIMESTAMP,
+                    CONSTRAINT uq_publication_clip_platform UNIQUE (clip_id, platform)
+                )
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE publications
+                ADD COLUMN IF NOT EXISTS thumbnail_uploaded_at TIMESTAMP
+            """))
+
             conn.commit()
 
             print("Database migration completed.")

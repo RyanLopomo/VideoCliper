@@ -9,6 +9,8 @@ MAX_CLIPS = 5
 MIN_DURATION = 15
 MAX_DURATION = 60
 OLLAMA_TIMEOUT = 180
+END_PUNCTUATION = (".", "!", "?", "...")
+KEYWORDS = ("segredo", "erro", "dica", "importante", "resultado", "como", "por que", "melhor", "nunca")
 
 
 def load_transcript(transcript_path: str) -> dict:
@@ -103,6 +105,76 @@ def fallback_clips(transcript: dict) -> list:
     return clips
 
 
+def clip_score(clip: dict, segments: list) -> float:
+    start = clip["start_time"]
+    end = clip["end_time"]
+    duration = max(end - start, 1)
+    text = " ".join(
+        str(s.get("text", "")).strip()
+        for s in segments
+        if float(s.get("end", 0)) >= start and float(s.get("start", 0)) <= end
+    ).strip()
+    words = re.findall(r"\w+", text.lower())
+    density = min(len(words) / duration, 4)
+    keyword_bonus = sum(1 for word in KEYWORDS if word in text.lower()) * 0.35
+    natural_start = 1 if any(abs(float(s.get("start", 0)) - start) <= 0.6 for s in segments) else 0
+    natural_end = 1 if text.endswith(END_PUNCTUATION) or any(abs(float(s.get("end", 0)) - end) <= 0.8 for s in segments) else 0
+    duration_fit = 1 - min(abs(duration - 35) / 35, 1)
+    return round(density + keyword_bonus + natural_start + natural_end + duration_fit, 3)
+
+
+def naturalize_clip(clip: dict, segments: list) -> dict | None:
+    start = float(clip["start_time"])
+    end = float(clip["end_time"])
+    nearby_start = [s for s in segments if abs(float(s.get("start", 0)) - start) <= 2.0]
+    nearby_end = [s for s in segments if abs(float(s.get("end", 0)) - end) <= 3.0]
+
+    if nearby_start:
+        start = float(min(nearby_start, key=lambda s: abs(float(s.get("start", 0)) - start))["start"])
+    if nearby_end:
+        end = float(min(nearby_end, key=lambda s: abs(float(s.get("end", 0)) - end))["end"])
+
+    if end - start > MAX_DURATION:
+        end = start + MAX_DURATION
+        valid_ends = [float(s.get("end", 0)) for s in segments if start + MIN_DURATION <= float(s.get("end", 0)) <= end]
+        if valid_ends:
+            end = max(valid_ends)
+
+    if end - start < MIN_DURATION:
+        valid_ends = [float(s.get("end", 0)) for s in segments if float(s.get("end", 0)) >= start + MIN_DURATION]
+        if valid_ends:
+            end = min(valid_ends)
+
+    if end - start < MIN_DURATION or end <= start:
+        return None
+
+    title = str(clip.get("title") or "Corte sugerido").strip()
+    text = " ".join(
+        str(s.get("text", "")).strip()
+        for s in segments
+        if float(s.get("end", 0)) >= start and float(s.get("start", 0)) <= end
+    ).strip()
+    if text and title == "Corte sugerido":
+        title = text[:80]
+
+    return {"start_time": start, "end_time": end, "title": title[:100]}
+
+
+def remove_overlaps(clips: list) -> list:
+    selected = []
+    for clip in sorted(clips, key=lambda c: c.get("score", 0), reverse=True):
+        overlap = False
+        for current in selected:
+            shared = max(0, min(clip["end_time"], current["end_time"]) - max(clip["start_time"], current["start_time"]))
+            shortest = min(clip["end_time"] - clip["start_time"], current["end_time"] - current["start_time"])
+            if shortest and shared / shortest > 0.55:
+                overlap = True
+                break
+        if not overlap:
+            selected.append(clip)
+    return sorted(selected, key=lambda c: c["start_time"])[:MAX_CLIPS]
+
+
 def clean_response(response: str) -> str:
 
     response = response.strip()
@@ -146,9 +218,10 @@ def parse_response(response: str) -> list:
     return clips
 
 
-def normalize_clips(clips: list) -> list:
+def normalize_clips(clips: list, transcript: dict | None = None) -> list:
 
     normalized = []
+    segments = (transcript or {}).get("segments", [])
 
     for clip in clips:
 
@@ -196,17 +269,16 @@ def normalize_clips(clips: list) -> list:
         if not title:
             title = "Corte sugerido"
 
-        normalized.append(
-            {
-                "start_time": start,
-                "end_time": end,
-                "title": title,
-            }
-        )
+        item = {"start_time": start, "end_time": end, "title": title[:100]}
+        if segments:
+            item = naturalize_clip(item, segments)
+            if not item:
+                continue
+            item["score"] = clip_score(item, segments)
+        normalized.append(item)
 
-    normalized.sort(
-        key=lambda x: x["start_time"]
-    )
+    normalized = remove_overlaps(normalized) if segments else normalized
+    normalized.sort(key=lambda x: x["start_time"])
 
     return normalized[:MAX_CLIPS]
 
@@ -238,7 +310,7 @@ async def find_clips(transcript_path: str):
 
         clips = parse_response(response)
 
-        normalized = normalize_clips(clips)
+        normalized = normalize_clips(clips, transcript)
 
         log(
             "CLIP_FINDER",

@@ -80,3 +80,9 @@ class Clip(Base):
         "Video",
         back_populates="clips",
     )
+
+    publications = relationship(
+        "Publication",
+        back_populates="clip",
+        cascade="all, delete-orphan",
+    )

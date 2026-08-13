@@ -1,8 +1,13 @@
+import os
+
 import httpx
 
 from app.utils.pipeline_logger import log
 
-OLLAMA_URL = "http://host.docker.internal:11434/api/generate"
+OLLAMA_URLS = [
+    os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate"),
+    "http://host.docker.internal:11434/api/generate",
+]
 OLLAMA_MODEL = "qwen3:8b"
 REQUEST_TIMEOUT = 180
 
@@ -22,10 +27,19 @@ async def generate(prompt: str) -> str:
 
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-            response = await client.post(
-                OLLAMA_URL,
-                json=payload,
-            )
+            last_error = None
+
+            for url in dict.fromkeys(OLLAMA_URLS):
+                try:
+                    response = await client.post(
+                        url,
+                        json=payload,
+                    )
+                    break
+                except httpx.ConnectError as e:
+                    last_error = e
+            else:
+                raise last_error
 
         log("OLLAMA", f"HTTP {response.status_code}")
 

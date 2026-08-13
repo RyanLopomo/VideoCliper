@@ -1,0 +1,3 @@
+backend/app/youtube/client_secret.json
+backend/app/youtube/token.json
+postgres-data/

@@ -11,3 +11,6 @@ faster-whisper
 pydantic
 pydantic-settings
 ffmpeg-python
+google-api-python-client
+google-auth
+google-auth-oauthlib
