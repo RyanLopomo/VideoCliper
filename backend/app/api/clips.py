@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.db.dependencies import get_db
 from app.models.clip import Clip
+from app.models.publication import Publication
+from app.youtube.publication_urls import publication_url
 
 router = APIRouter(prefix="/clips", tags=["clips"])
 
@@ -84,7 +86,17 @@ def get_video_clips(
         .filter(Clip.video_id == video_id)
         .all()
     )
-    return [
+    result = []
+    for clip in clips:
+        publication = (
+            db.query(Publication)
+            .filter(
+                Publication.clip_id == clip.id,
+                Publication.status == "PUBLISHED",
+            )
+            .first()
+        )
+        result.append(
         {
             "id": clip.id,
             "video_id": clip.video_id,
@@ -96,9 +108,12 @@ def get_video_clips(
             "thumbnail_url": f"/clips/{clip.id}/thumbnail",
             "stream_url": f"/clips/{clip.id}/stream",
             "download_url": f"/clips/{clip.id}/download",
+            "publication_url": publication_url(publication) if publication else None,
+            "publication_platform": publication.platform if publication else None,
+            "publication_status": publication.status if publication else None,
         }
-        for clip in clips
-    ]
+        )
+    return result
 
 @router.get("/{clip_id}/stream")
 def stream_clip(clip_id: int, db: Session = Depends(get_db)):

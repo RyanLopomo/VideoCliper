@@ -9,4 +9,7 @@ export interface Clip {
   thumbnail_url: string;
   stream_url: string;
   download_url: string;
+  publication_url?: string | null;
+  publication_platform?: string | null;
+  publication_status?: string | null;
 }

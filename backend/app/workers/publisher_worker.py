@@ -1,4 +1,5 @@
 import asyncio
+import re
 import signal
 import time
 from datetime import datetime, timedelta
@@ -7,6 +8,7 @@ import traceback
 from googleapiclient.errors import HttpError
 
 from app.db.database import SessionLocal
+from app.db.migrations import run_migrations
 from app.models.clip import Clip
 from app.models.project import Project
 from app.models.publication import Publication
@@ -40,6 +42,8 @@ def request_shutdown(signum, frame):
 def classify_error(error: Exception) -> str:
     text = str(error)
 
+    if "AUTH_REQUIRED" in text:
+        return "AUTH_REVOKED"
     if isinstance(error, FileNotFoundError) or isinstance(error, ValueError):
         return "VALIDATION_ERROR"
     if "quotaExceeded" in text:
@@ -58,6 +62,19 @@ def classify_error(error: Exception) -> str:
     return "NETWORK_ERROR"
 
 
+def redact_secret_text(text: str) -> str:
+    patterns = [
+        r"(access_token['\"=: ]+)[^'\"\s,}]+",
+        r"(refresh_token['\"=: ]+)[^'\"\s,}]+",
+        r"(client_secret['\"=: ]+)[^'\"\s,}]+",
+        r"(Authorization:\s*Bearer\s+)[^\s]+",
+    ]
+    redacted = text
+    for pattern in patterns:
+        redacted = re.sub(pattern, r"\1[REDACTED]", redacted, flags=re.IGNORECASE)
+    return redacted
+
+
 def next_quota_retry() -> datetime:
     now = datetime.utcnow()
     return (now + timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
@@ -66,7 +83,7 @@ def next_quota_retry() -> datetime:
 def mark_retry(db, publication: Publication, error_type: str, details: str):
     publication.attempts += 1
     publication.error_type = error_type
-    publication.error_details = details[:4000]
+    publication.error_details = redact_secret_text(details)[:4000]
     publication.updated_at = datetime.utcnow()
 
     if publication.attempts >= publisher_max_attempts() or error_type not in TRANSIENT:
@@ -197,6 +214,10 @@ def main():
     signal.signal(signal.SIGTERM, request_shutdown)
 
     log("PUBLISHER", "Worker iniciado")
+    try:
+        run_migrations()
+    except Exception as e:
+        log("PUBLISHER", f"Migration check falhou: {e}")
     last_recovery = 0
 
     if worker_run_once():
@@ -206,7 +227,11 @@ def main():
 
     while not SHUTDOWN:
         worker_heartbeat()
-        found = run_once()
+        try:
+            found = run_once()
+        except Exception as e:
+            found = False
+            log("PUBLISHER", f"Erro fora da publication: {classify_error(e)} {e}")
         now = time.time()
 
         if now - last_recovery >= recovery_interval():
@@ -214,6 +239,8 @@ def main():
             try:
                 count = recover_stuck_publications(db)
                 log("RECOVERY", f"Recovery executado count={count}")
+            except Exception as e:
+                log("RECOVERY", f"Recovery falhou: {e}")
             finally:
                 db.close()
             last_recovery = now

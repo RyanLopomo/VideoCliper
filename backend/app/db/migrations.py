@@ -48,6 +48,20 @@ def run_migrations():
             """))
 
             conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS publication_accounts (
+                    id SERIAL PRIMARY KEY,
+                    platform VARCHAR NOT NULL DEFAULT 'YOUTUBE',
+                    account_name VARCHAR NOT NULL,
+                    platform_account_id VARCHAR NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    is_default BOOLEAN NOT NULL DEFAULT FALSE,
+                    credential_path VARCHAR,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS publications (
                     id SERIAL PRIMARY KEY,
                     clip_id INTEGER NOT NULL REFERENCES clips(id),
@@ -68,6 +82,11 @@ def run_migrations():
             conn.execute(text("""
                 ALTER TABLE publications
                 ADD COLUMN IF NOT EXISTS thumbnail_uploaded_at TIMESTAMP
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE publications
+                ADD COLUMN IF NOT EXISTS publication_account_id INTEGER REFERENCES publication_accounts(id)
             """))
 
             conn.commit()

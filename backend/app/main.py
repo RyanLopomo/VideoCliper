@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.projects import router as projects_router
 from app.api.videos import router as videos_router
 from app.api.clips import router as clips_router
+from app.api.publications import router as publications_router
 from app.db.migrations import run_migrations
 
 from app.db.database import Base, engine
@@ -24,6 +25,7 @@ from app.queue.redis_connectiuon import redis_conn
 app = FastAPI(title="AxisClip API")
 
 app.include_router(clips_router)
+app.include_router(publications_router)
 app.include_router(projects_router)
 app.include_router(videos_router)
 

@@ -30,6 +30,8 @@ services:
   backend:
     build: ./backend
     container_name: axis_clip_backend
+    env_file:
+      - .env
     ports: ["8000:8000"]
     depends_on:
       postgres:
@@ -43,6 +45,8 @@ services:
   worker:
     build: ./backend
     container_name: axisclip_worker
+    env_file:
+      - .env
     command: rq worker videos --url redis://redis:6379
     depends_on:
       redis:
@@ -56,6 +60,8 @@ services:
   publisher:
     build: ./backend
     container_name: axisclip_publisher
+    env_file:
+      - .env
     command: python -m app.workers.publisher_worker
     depends_on:
       postgres:

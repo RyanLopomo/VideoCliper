@@ -68,3 +68,11 @@ def worker_run_once() -> bool:
 
 def tiktok_enabled() -> bool:
     return os.getenv("TIKTOK_ENABLED", "false").lower() == "true"
+
+
+def frontend_base_url() -> str:
+    return os.getenv("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
+
+
+def dct_uri() -> str | None:
+    return os.getenv("CT_URI")

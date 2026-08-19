@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -22,6 +23,7 @@ class Publication(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     clip_id = Column(Integer, ForeignKey("clips.id"), nullable=False)
+    publication_account_id = Column(Integer, ForeignKey("publication_accounts.id"), nullable=True)
     platform = Column(String, nullable=False, default="YOUTUBE")
     status = Column(String, nullable=False, default="PENDING")
     error_type = Column(String, nullable=True)
@@ -35,3 +37,20 @@ class Publication(Base):
     thumbnail_uploaded_at = Column(DateTime, nullable=True)
 
     clip = relationship("Clip", back_populates="publications")
+    publication_account = relationship("PublicationAccount", back_populates="publications")
+
+
+class PublicationAccount(Base):
+    __tablename__ = "publication_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    platform = Column(String, nullable=False, default="YOUTUBE")
+    account_name = Column(String, nullable=False)
+    platform_account_id = Column(String, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    is_default = Column(Boolean, nullable=False, default=False)
+    credential_path = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    publications = relationship("Publication", back_populates="publication_account")

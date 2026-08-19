@@ -1,3 +1,4 @@
 backend/app/youtube/client_secret.json
 backend/app/youtube/token.json
+backend/app/youtube/oauth_state.json
 postgres-data/
