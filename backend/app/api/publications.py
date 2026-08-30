@@ -18,7 +18,7 @@ from app.youtube.auth import (
     get_saved_credentials,
     save_credentials_from_callback,
 )
-from app.youtube.config import frontend_base_url, youtube_redirect_uri as configured_youtube_redirect_uri
+from app.youtube.config import frontend_base_url, youtube_redirect_uri
 from app.youtube.publication_urls import publication_url
 
 router = APIRouter()
@@ -132,13 +132,6 @@ def upsert_youtube_account(db: Session, credentials) -> PublicationAccount:
     return account
 
 
-def youtube_redirect_uri(request: Request) -> str:
-    configured = configured_youtube_redirect_uri()
-    if configured:
-        return configured
-    return str(request.url_for("youtube_callback"))
-
-
 @router.get("/youtube/account")
 def youtube_account(db: Session = Depends(get_db)):
     account = default_account(db, "YOUTUBE")
@@ -157,27 +150,34 @@ def youtube_account(db: Session = Depends(get_db)):
 
 
 @router.get("/youtube/auth")
-def start_youtube_auth(request: Request):
+def start_youtube_auth():
     try:
-        return {"auth_url": authorization_url(youtube_redirect_uri(request))}
+        redirect_uri = youtube_redirect_uri()
+        print(f"OAuth authorization started redirect_uri={redirect_uri}")
+        return {"auth_url": authorization_url(redirect_uri)}
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail="Credencial do YouTube nao configurada.")
 
 
 @router.get("/youtube/callback", name="youtube_callback")
 def youtube_callback(request: Request, db: Session = Depends(get_db)):
-    print("OAuth callback recebido")
+    redirect_uri = youtube_redirect_uri()
+    print(f"OAuth callback received redirect_uri={redirect_uri}")
     if request.query_params.get("error"):
-        print("OAuth callback negado")
+        print("OAuth callback denied")
         return RedirectResponse(f"{frontend_base_url()}/settings?youtube=error")
     try:
-        if request.query_params.get("code"):
-            print("OAuth code recebido")
+        print(
+            "OAuth callback params "
+            f"code_received={bool(request.query_params.get('code'))} "
+            f"state_received={bool(request.query_params.get('state'))}"
+        )
+        print("OAuth token exchange started")
         credentials = save_credentials_from_callback(
-            youtube_redirect_uri(request),
+            redirect_uri,
             str(request.url),
         )
-        print("OAuth credentials obtidas")
+        print("OAuth token exchange succeeded")
         account = upsert_youtube_account(db, credentials)
         print(f"Canal identificado channel_id={account.platform_account_id}")
         db.query(PublicationAccount).filter(PublicationAccount.platform == "YOUTUBE").update({"is_default": False})
@@ -189,7 +189,7 @@ def youtube_callback(request: Request, db: Session = Depends(get_db)):
         print("Redirect executado")
         return RedirectResponse(f"{frontend_base_url()}/settings?youtube=connected")
     except (HttpError, RuntimeError, ValueError, InsecureTransportError, MismatchingStateError, OAuth2Error) as e:
-        print(f"OAuth callback falhou error_type={type(e).__name__}")
+        print(f"OAuth token exchange failed error_type={type(e).__name__}")
         return RedirectResponse(f"{frontend_base_url()}/settings?youtube=error")
 
 

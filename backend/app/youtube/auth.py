@@ -70,15 +70,15 @@ def _allow_local_http(redirect_uri: str):
         os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 
-def _save_state(state: str):
-    STATE_FILE.write_text(json.dumps({"state": state}), encoding="utf-8")
+def _save_state(state: str, redirect_uri: str):
+    STATE_FILE.write_text(json.dumps({"state": state, "redirect_uri": redirect_uri}), encoding="utf-8")
 
 
-def _load_state() -> str | None:
+def _load_state() -> dict | None:
     if not STATE_FILE.exists():
         return None
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8")).get("state")
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
 
@@ -93,16 +93,20 @@ def authorization_url(redirect_uri: str) -> str:
         prompt="select_account consent",
         state=state,
     )
-    _save_state(state)
+    _save_state(state, redirect_uri)
     return url
 
 
 def save_credentials_from_callback(redirect_uri: str, authorization_response: str):
     _allow_local_http(redirect_uri)
-    state = _load_state()
+    saved_oauth = _load_state()
+    state = saved_oauth.get("state") if saved_oauth else None
+    saved_redirect_uri = saved_oauth.get("redirect_uri") if saved_oauth else None
     callback_state = parse_qs(urlparse(authorization_response).query).get("state", [None])[0]
-    if not state or callback_state != state:
+    if not state or callback_state != state or not saved_redirect_uri:
         raise MismatchingStateError()
+    if redirect_uri != saved_redirect_uri:
+        redirect_uri = saved_redirect_uri
 
     previous_refresh_token = None
     if TOKEN_FILE.exists():

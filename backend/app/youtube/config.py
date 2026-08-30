@@ -74,5 +74,9 @@ def frontend_base_url() -> str:
     return os.getenv("FRONTEND_BASE_URL", "http://localhost:5173").rstrip("/")
 
 
+def youtube_redirect_uri() -> str:
+    return os.getenv("YOUTUBE_REDIRECT_URI", "http://localhost:8000/youtube/callback")
+
+
 def dct_uri() -> str | None:
     return os.getenv("CT_URI")
