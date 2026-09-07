@@ -1,7 +1,9 @@
 import json
+import re
 from pathlib import Path
 
 from app.services.ollama_client import generate
+from app.utils.pipeline_logger import log
 from app.youtube.validator import normalize_metadata
 
 
@@ -86,7 +88,23 @@ TEXTO DO VIDEO:
 {transcript}
 """
 
-    response = clean_json_response(await generate(prompt))
-    metadata = json.loads(response)
+    try:
+        response = clean_json_response(await generate(prompt))
+    except RuntimeError as exc:
+        if "resposta vazia" not in str(exc).lower():
+            raise
+        log("YT-UPLOAD", "etapa=metadata status=fallback exception=RuntimeError message=Ollama retornou resposta vazia")
+        response = ""
+    try:
+        metadata = json.loads(response)
+    except json.JSONDecodeError:
+        log("YT-UPLOAD", "etapa=metadata status=fallback exception=JSONDecodeError message=Ollama retornou JSON invalido")
+        words = re.findall(r"\w+", transcript, flags=re.UNICODE)
+        title = " ".join(words[:12]).strip() or "Clip AxisClip"
+        metadata = {
+            "title": title[:100],
+            "description": transcript[:500],
+            "tags": [],
+        }
 
     return normalize_metadata(metadata)

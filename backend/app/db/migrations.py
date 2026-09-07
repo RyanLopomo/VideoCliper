@@ -90,6 +90,16 @@ def run_migrations():
             """))
 
             conn.execute(text("""
+                ALTER TABLE publications
+                ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE publications
+                ADD COLUMN IF NOT EXISTS manual BOOLEAN NOT NULL DEFAULT FALSE
+            """))
+
+            conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS notifications (
                     id SERIAL PRIMARY KEY,
                     event_key VARCHAR NOT NULL UNIQUE,

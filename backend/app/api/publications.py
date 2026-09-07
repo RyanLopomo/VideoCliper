@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
@@ -18,7 +18,24 @@ from app.youtube.auth import (
     get_saved_credentials,
     save_credentials_from_callback,
 )
-from app.youtube.config import frontend_base_url, youtube_redirect_uri
+from app.services.notifications import notify
+from app.services.publication_scheduler import (
+    create_scheduled_publications,
+    eligible_clips,
+    scheduled_counts_by_date,
+    suggest_publish_times,
+    build_schedule_plan,
+)
+from app.youtube.config import (
+    frontend_base_url,
+    max_uploads_per_day,
+    publication_settings_snapshot,
+    publish_schedule,
+    publish_timezone,
+    save_publication_settings,
+    youtube_redirect_uri,
+)
+from app.youtube.publication_queue import enqueue_publication
 from app.youtube.publication_urls import publication_url
 
 router = APIRouter()
@@ -28,6 +45,31 @@ class PublicationCreate(BaseModel):
     clip_id: int
     platform: str = "YOUTUBE"
     publication_account_id: int | None = None
+    scheduled_at: str | None = None
+
+
+class PublicationScheduleUpdate(BaseModel):
+    scheduled_at: str
+
+
+class PublicationSettingsUpdate(BaseModel):
+    youtube_auto_publish: bool
+    max_uploads_per_day: int
+    publish_schedule: list[str]
+    publish_timezone: str
+    manual_upload_counts_toward_daily_limit: bool
+
+
+class PublicationPlanRequest(BaseModel):
+    clip_ids: list[int]
+    platform: str = "YOUTUBE"
+    max_per_day: int
+    start_date: str
+    times: list[str]
+
+
+class PublicationSuggestionRequest(BaseModel):
+    max_per_day: int = 4
 
 
 def build_platform_url(publication: Publication) -> str | None:
@@ -58,13 +100,64 @@ def serialize_publication(publication: Publication) -> dict:
         "platform": publication.platform,
         "account": serialize_account(account) if account else None,
         "status": publication.status,
+        "error_type": publication.error_type,
+        "error_details": publication.error_details,
         "attempts": publication.attempts,
         "created_at": publication.created_at,
         "updated_at": publication.updated_at,
         "published_at": publication.published_at,
+        "scheduled_at": publication.scheduled_at,
+        "manual": publication.manual,
+        "next_retry": publication.next_retry,
         "platform_post_id": publication.platform_post_id,
         "publication_url": build_platform_url(publication),
     }
+
+
+def parse_scheduled_at(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Data de agendamento invalida.")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=publish_timezone())
+    utc_value = parsed.astimezone(timezone.utc)
+    if utc_value <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="Agendamento nao pode estar no passado.")
+    return utc_value.replace(tzinfo=None)
+
+
+def ensure_schedule_available(db: Session, platform: str, scheduled_at: datetime, publication_id: int | None = None):
+    query = (
+        db.query(Publication)
+        .filter(
+            Publication.platform == platform,
+            Publication.status == "SCHEDULED",
+            Publication.scheduled_at == scheduled_at,
+        )
+    )
+    if publication_id is not None:
+        query = query.filter(Publication.id != publication_id)
+    existing = query.first()
+    if existing:
+        raise HTTPException(status_code=409, detail="Horario ja possui publicacao agendada.")
+
+
+def ensure_daily_schedule_limit(db: Session, scheduled_at: datetime, publication_id: int | None = None):
+    tz = publish_timezone()
+    local = scheduled_at.replace(tzinfo=timezone.utc).astimezone(tz)
+    start = local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc).replace(tzinfo=None)
+    end = (local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    limit = min(max_uploads_per_day(), len(publish_schedule()) or max_uploads_per_day())
+    query = db.query(Publication).filter(
+        Publication.status == "SCHEDULED",
+        Publication.scheduled_at >= start,
+        Publication.scheduled_at < end,
+    )
+    if publication_id is not None:
+        query = query.filter(Publication.id != publication_id)
+    if query.count() >= limit:
+        raise HTTPException(status_code=409, detail="Limite diario de agendamentos atingido.")
 
 
 def default_account(db: Session, platform: str) -> PublicationAccount | None:
@@ -82,6 +175,20 @@ def default_account(db: Session, platform: str) -> PublicationAccount | None:
 @router.get("/publication-accounts")
 def list_publication_accounts(db: Session = Depends(get_db)):
     return [serialize_account(account) for account in db.query(PublicationAccount).order_by(PublicationAccount.id).all()]
+
+
+@router.get("/publication-settings")
+def publication_settings():
+    return publication_settings_snapshot()
+
+
+@router.put("/publication-settings")
+def update_publication_settings(payload: PublicationSettingsUpdate):
+    try:
+        data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
+        return save_publication_settings(data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.get("/publication-accounts/{account_id}")
@@ -242,6 +349,40 @@ def list_publications(db: Session = Depends(get_db)):
     return [serialize_publication(item) for item in db.query(Publication).order_by(Publication.created_at.desc()).all()]
 
 
+@router.post("/publications/schedule/suggestions")
+def publication_schedule_suggestions(payload: PublicationSuggestionRequest):
+    return {"times": suggest_publish_times(payload.max_per_day)}
+
+
+@router.post("/publications/schedule/preview")
+def preview_publication_schedule(payload: PublicationPlanRequest, db: Session = Depends(get_db)):
+    platform = payload.platform.upper()
+    clips = eligible_clips(db, payload.clip_ids, platform, include_scheduled=True)
+    clip_ids = {clip.id for clip in clips}
+    return build_schedule_plan(
+        clips,
+        payload.max_per_day,
+        payload.start_date,
+        payload.times,
+        reserved_by_date=scheduled_counts_by_date(db, platform, exclude_clip_ids=clip_ids),
+    )
+
+
+@router.post("/publications/schedule/confirm")
+def confirm_publication_schedule(payload: PublicationPlanRequest, db: Session = Depends(get_db)):
+    platform = payload.platform.upper()
+    clips = eligible_clips(db, payload.clip_ids, platform, include_scheduled=True)
+    result = create_scheduled_publications(
+        db,
+        clips,
+        platform,
+        payload.max_per_day,
+        payload.start_date,
+        payload.times,
+    )
+    return result
+
+
 @router.get("/publications/{publication_id}")
 def get_publication(publication_id: int, db: Session = Depends(get_db)):
     publication = db.get(Publication, publication_id)
@@ -260,14 +401,63 @@ def create_publication(payload: PublicationCreate, db: Session = Depends(get_db)
     if account_id is None:
         account = default_account(db, platform)
         account_id = account.id if account else None
-
-    publication = Publication(
-        clip_id=clip.id,
+    scheduled_at = parse_scheduled_at(payload.scheduled_at) if payload.scheduled_at else None
+    if scheduled_at:
+        ensure_schedule_available(db, platform, scheduled_at)
+        ensure_daily_schedule_limit(db, scheduled_at)
+    publication = enqueue_publication(
+        db,
+        clip,
         platform=platform,
         publication_account_id=account_id,
-        status="PENDING",
+        status="SCHEDULED" if scheduled_at else "PENDING",
+        scheduled_at=scheduled_at,
+        manual=True,
     )
-    db.add(publication)
+    is_scheduled = publication.status == "SCHEDULED"
+    notify(
+        db,
+        event_key=f"publication:{publication.id}:{'scheduled' if is_scheduled else 'queued'}",
+        type="PROCESSING_STARTED",
+        title="Clip agendado" if is_scheduled else "Clip adicionado a fila de publicacao",
+        message=(
+            f"Publicacao agendada para {publication.scheduled_at.isoformat()}."
+            if is_scheduled and publication.scheduled_at
+            else "O publisher fara o upload pelo worker."
+        ),
+        clip_id=clip.id,
+        publication_id=publication.id,
+        platform=platform,
+    )
+    return serialize_publication(publication)
+
+
+@router.patch("/publications/{publication_id}/schedule")
+def update_publication_schedule(publication_id: int, payload: PublicationScheduleUpdate, db: Session = Depends(get_db)):
+    publication = db.get(Publication, publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publicacao nao encontrada.")
+    if publication.status != "SCHEDULED":
+        raise HTTPException(status_code=409, detail="Somente publicacoes agendadas podem ser editadas.")
+    scheduled_at = parse_scheduled_at(payload.scheduled_at)
+    ensure_schedule_available(db, publication.platform, scheduled_at, publication_id)
+    ensure_daily_schedule_limit(db, scheduled_at, publication_id)
+    publication.scheduled_at = scheduled_at
+    publication.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(publication)
+    return serialize_publication(publication)
+
+
+@router.post("/publications/{publication_id}/cancel")
+def cancel_publication(publication_id: int, db: Session = Depends(get_db)):
+    publication = db.get(Publication, publication_id)
+    if not publication:
+        raise HTTPException(status_code=404, detail="Publicacao nao encontrada.")
+    if publication.status != "SCHEDULED":
+        raise HTTPException(status_code=409, detail="Somente agendamentos podem ser cancelados.")
+    publication.status = "CANCELLED"
+    publication.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(publication)
     return serialize_publication(publication)

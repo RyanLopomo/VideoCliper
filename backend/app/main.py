@@ -67,7 +67,7 @@ def health():
             status.lower(): db.query(Publication)
             .filter(Publication.status == status)
             .count()
-            for status in ["PENDING", "WAITING_RETRY", "UPLOADING", "PROCESSING", "FAILED", "PUBLISHED"]
+            for status in ["SCHEDULED", "PENDING", "WAITING_RETRY", "UPLOADING", "PROCESSING", "FAILED", "PUBLISHED", "CANCELLED"]
         }
 
         worker_heartbeat = last_worker_heartbeat()

@@ -92,8 +92,9 @@ def get_video_clips(
             db.query(Publication)
             .filter(
                 Publication.clip_id == clip.id,
-                Publication.status == "PUBLISHED",
+                Publication.status != "CANCELLED",
             )
+            .order_by(Publication.created_at.desc())
             .first()
         )
         result.append(
@@ -109,8 +110,12 @@ def get_video_clips(
             "stream_url": f"/clips/{clip.id}/stream",
             "download_url": f"/clips/{clip.id}/download",
             "publication_url": publication_url(publication) if publication else None,
+            "publication_id": publication.id if publication else None,
             "publication_platform": publication.platform if publication else None,
             "publication_status": publication.status if publication else None,
+            "publication_scheduled_at": publication.scheduled_at if publication else None,
+            "publication_error_type": publication.error_type if publication else None,
+            "publication_error_details": publication.error_details if publication else None,
         }
         )
     return result
