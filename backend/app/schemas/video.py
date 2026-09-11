@@ -6,6 +6,11 @@ from pydantic import BaseModel
 class VideoUrlCreate(BaseModel):
     project_id: int
     url: str
+    publication_plan_enabled: bool = False
+    publication_max_per_day: int | None = None
+    publication_start_date: str | None = None
+    publication_times: list[str] | None = None
+    publication_timezone: str | None = None
 
 
 class VideoResponse(BaseModel):
@@ -18,6 +23,12 @@ class VideoResponse(BaseModel):
     status: str
     processing_stage: str | None = None
     last_completed_clip: int = 0
+    publication_plan_enabled: bool = False
+    publication_max_per_day: int | None = None
+    publication_start_date: str | None = None
+    publication_times: str | None = None
+    publication_timezone: str | None = None
+    publication_plan_applied_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -31,6 +42,12 @@ class VideoListResponse(BaseModel):
     status: str
     processing_stage: str | None = None
     last_completed_clip: int = 0
+    publication_plan_enabled: bool = False
+    publication_max_per_day: int | None = None
+    publication_start_date: str | None = None
+    publication_times: str | None = None
+    publication_timezone: str | None = None
+    publication_plan_applied_at: datetime | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

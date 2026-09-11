@@ -18,6 +18,7 @@ export interface Publication {
   id: number;
   clip_id: number;
   title?: string | null;
+  duration?: number | null;
   thumbnail_url?: string | null;
   platform: string;
   account?: PublicationAccount | null;
@@ -32,6 +33,7 @@ export interface Publication {
   manual?: boolean;
   platform_post_id?: string | null;
   publication_url?: string | null;
+  timezone?: string | null;
   attempts?: number;
 }
 

@@ -41,6 +41,12 @@ def get_video_status(video_id: str):
         "privacy_status": status.get(
             "privacyStatus"
         ),
+        "publish_at": status.get(
+            "publishAt"
+        ),
+        "published_at": video.get("snippet", {}).get(
+            "publishedAt"
+        ),
         "processing_status": processing.get(
             "processingStatus"
         ),

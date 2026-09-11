@@ -37,6 +37,11 @@ from app.youtube.config import (
 )
 from app.youtube.publication_queue import enqueue_publication
 from app.youtube.publication_urls import publication_url
+from app.youtube.schedule_control import (
+    cancel_youtube_publish_at,
+    get_youtube_publication_state,
+    update_youtube_publish_at,
+)
 
 router = APIRouter()
 
@@ -92,10 +97,14 @@ def serialize_account(account: PublicationAccount) -> dict:
 def serialize_publication(publication: Publication) -> dict:
     clip = publication.clip
     account = publication.publication_account
+    duration = None
+    if clip and clip.start_time is not None and clip.end_time is not None:
+        duration = round(float(clip.end_time) - float(clip.start_time), 1)
     return {
         "id": publication.id,
         "clip_id": publication.clip_id,
         "title": clip.title if clip else None,
+        "duration": duration,
         "thumbnail_url": f"/clips/{clip.id}/thumbnail" if clip and clip.thumbnail_path else None,
         "platform": publication.platform,
         "account": serialize_account(account) if account else None,
@@ -111,7 +120,65 @@ def serialize_publication(publication: Publication) -> dict:
         "next_retry": publication.next_retry,
         "platform_post_id": publication.platform_post_id,
         "publication_url": build_platform_url(publication),
+        "timezone": str(publish_timezone()),
     }
+
+
+def _parse_optional_youtube_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _http_exception_from_youtube_error(exc: Exception):
+    if isinstance(exc, HTTPException):
+        raise exc
+    if isinstance(exc, HttpError):
+        status = int(getattr(getattr(exc, "resp", None), "status", 0) or 502)
+        raise HTTPException(status_code=502, detail=f"YouTube rejeitou a atualizacao. HTTP {status}.") from exc
+    raise HTTPException(status_code=502, detail=str(exc) or "Falha ao sincronizar com o YouTube.") from exc
+
+
+def sync_publication_with_youtube(db: Session, publication: Publication) -> Publication:
+    if publication.platform != "YOUTUBE" or not publication.platform_post_id:
+        return publication
+    if publication.status not in {"SCHEDULED", "UPLOADING", "PROCESSING", "PUBLISHED"}:
+        return publication
+    try:
+        state = get_youtube_publication_state(publication.platform_post_id)
+    except Exception:
+        return publication
+
+    if not state.get("exists"):
+        return publication
+
+    upload_status = state.get("upload_status")
+    privacy_status = state.get("privacy_status")
+    publish_at = _parse_optional_youtube_datetime(state.get("publish_at"))
+    published_at = _parse_optional_youtube_datetime(state.get("published_at"))
+    now = datetime.utcnow()
+
+    if upload_status == "processed" and privacy_status == "public":
+        publication.status = "PUBLISHED"
+        publication.published_at = published_at or publication.published_at or now
+        publication.next_retry = None
+        publication.error_type = None
+        publication.error_details = None
+    elif privacy_status == "private" and publish_at and publish_at > now:
+        publication.status = "SCHEDULED"
+        publication.scheduled_at = publish_at
+    elif publication.status == "PUBLISHED":
+        publication.status = "PROCESSING"
+    elif publication.status == "SCHEDULED" and privacy_status == "private" and not publish_at:
+        publication.status = "CANCELLED"
+
+    publication.updated_at = now
+    db.commit()
+    db.refresh(publication)
+    return publication
 
 
 def parse_scheduled_at(value: str) -> datetime:
@@ -346,7 +413,8 @@ def delete_publication_account(account_id: int, db: Session = Depends(get_db)):
 
 @router.get("/publications")
 def list_publications(db: Session = Depends(get_db)):
-    return [serialize_publication(item) for item in db.query(Publication).order_by(Publication.created_at.desc()).all()]
+    publications = db.query(Publication).order_by(Publication.created_at.desc()).all()
+    return [serialize_publication(sync_publication_with_youtube(db, item)) for item in publications]
 
 
 @router.post("/publications/schedule/suggestions")
@@ -442,6 +510,11 @@ def update_publication_schedule(publication_id: int, payload: PublicationSchedul
     scheduled_at = parse_scheduled_at(payload.scheduled_at)
     ensure_schedule_available(db, publication.platform, scheduled_at, publication_id)
     ensure_daily_schedule_limit(db, scheduled_at, publication_id)
+    if publication.platform == "YOUTUBE" and publication.platform_post_id:
+        try:
+            update_youtube_publish_at(publication.platform_post_id, scheduled_at)
+        except Exception as exc:
+            _http_exception_from_youtube_error(exc)
     publication.scheduled_at = scheduled_at
     publication.updated_at = datetime.utcnow()
     db.commit()
@@ -456,6 +529,11 @@ def cancel_publication(publication_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Publicacao nao encontrada.")
     if publication.status != "SCHEDULED":
         raise HTTPException(status_code=409, detail="Somente agendamentos podem ser cancelados.")
+    if publication.platform == "YOUTUBE" and publication.platform_post_id:
+        try:
+            cancel_youtube_publish_at(publication.platform_post_id)
+        except Exception as exc:
+            _http_exception_from_youtube_error(exc)
     publication.status = "CANCELLED"
     publication.updated_at = datetime.utcnow()
     db.commit()

@@ -8,6 +8,7 @@ import { listNotifications, markNotificationsRead, testNotification } from './ap
 import { cancelPublication, confirmPublicationSchedule, disconnectYouTube, getPublicationSettings, getYouTubeAccount, listPublications, previewPublicationSchedule, publishClipNow, savePublicationSettings, scheduleClipPublication, startYouTubeAuth, suggestPublicationTimes, updatePublicationSchedule } from './api/publications'
 import { createProject, deleteProject, listProjects } from './api/projects'
 import { importVideoFromUrl, listVideos, pauseVideo, restartVideo, resumeVideo, startVideo, uploadVideo } from './api/videos'
+import type { UploadPublicationPlan } from './api/videos'
 import type { Clip } from './types/clip'
 import type { Health } from './types/health'
 import type { AxisNotification } from './types/notification'
@@ -76,13 +77,15 @@ function Projects({ projects, videos, selectProject, onCreateProject, onDeletePr
   return <Page title="Projetos" subtitle="Crie e acompanhe projetos"><form className="form panel" onSubmit={submit}><label>Nome do projeto<input value={name} onChange={e => setName(e.target.value)} placeholder="Novo projeto" /></label><button>Criar projeto</button></form><div className="cards">{projects.map(p => <article className="card" key={p.id}><h3>{p.name}</h3><span className={statusClass(p.status)}>{p.status}</span><p>{fmtDate(p.created_at)}</p><p>{videos.filter(v => v.project_id === p.id).length} videos</p><div className="actions"><button onClick={() => selectProject(p.id)}>Abrir</button><button className="danger" onClick={() => onDeleteProject(p.id)}>Excluir</button></div></article>)}</div></Page>
 }
 
-function ProjectDetail({ project, videos, onVideo, onUpload, onUrl }: { project?: Project; videos: Video[]; onVideo: (id: number) => void; onUpload: (id: number, file: File) => void; onUrl: (id: number, url: string) => void }) {
+function ProjectDetail({ project, videos, onVideo, onUpload, onUrl }: { project?: Project; videos: Video[]; onVideo: (id: number) => void; onUpload: (id: number, file: File, plan?: UploadPublicationPlan | null) => void; onUrl: (id: number, url: string, plan?: UploadPublicationPlan | null) => void }) {
   const [file, setFile] = useState<File | null>(null)
   const [mode, setMode] = useState<'file' | 'url'>('file')
   const [url, setUrl] = useState('')
+  const [planOpen, setPlanOpen] = useState(false)
+  const [publicationPlan, setPublicationPlan] = useState<UploadPublicationPlan | null>(null)
   const own = videos.filter(v => v.project_id === project?.id)
   if (!project) return <Empty text="Projeto nao encontrado" />
-  return <Page title={project.name} subtitle={`${own.length} videos`}><div className="panel upload" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); setMode('file'); setFile(e.dataTransfer.files[0]) }}><div className="segmented"><button className={mode === 'file' ? 'active' : ''} onClick={() => setMode('file')}>Arquivo</button><button className={mode === 'url' ? 'active' : ''} onClick={() => setMode('url')}>URL</button></div>{mode === 'file' ? <><label>Adicionar video MP4<input type="file" accept="video/mp4" onChange={e => setFile(e.target.files?.[0] || null)} /></label>{file && <p>{file.name} - {(file.size / 1024 / 1024).toFixed(1)} MB</p>}<button disabled={!file} onClick={() => file && onUpload(project.id, file)}>Enviar</button></> : <><label>URL do video<input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." /></label><button disabled={!url.trim()} onClick={() => onUrl(project.id, url)}>Processar video</button></>}</div><VideoList videos={own} onVideo={onVideo} /></Page>
+  return <Page title={project.name} subtitle={`${own.length} videos`}><div className="panel upload simple-upload" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); setMode('file'); setFile(e.dataTransfer.files[0]) }}><div className="segmented"><button className={mode === 'file' ? 'active' : ''} onClick={() => setMode('file')}>Arquivo</button><button className={mode === 'url' ? 'active' : ''} onClick={() => setMode('url')}>URL</button></div>{mode === 'file' ? <><label>Adicionar video MP4<input type="file" accept="video/mp4" onChange={e => setFile(e.target.files?.[0] || null)} /></label>{file && <p>{file.name} - {(file.size / 1024 / 1024).toFixed(1)} MB</p>}<div className="upload-actions"><button disabled={!file} onClick={() => file && onUpload(project.id, file, publicationPlan)}>Enviar</button><button onClick={() => setPlanOpen(true)}>configurar postagem</button></div></> : <><label>URL do video<input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://..." /></label><div className="upload-actions"><button disabled={!url.trim()} onClick={() => onUrl(project.id, url, publicationPlan)}>Processar video</button><button onClick={() => setPlanOpen(true)}>configurar postagem</button></div></>}{publicationPlan?.enabled && <p className="muted">Postagem configurada: {publicationPlan.maxPerDay} videos/dia a partir de {publicationPlan.startDate}.</p>}</div>{planOpen && <PreUploadPlanModal initial={publicationPlan} onClose={() => setPlanOpen(false)} onSave={plan => { setPublicationPlan(plan); setPlanOpen(false) }} />}<VideoList videos={own} onVideo={onVideo} /></Page>
 }
 
 function Videos({ videos, onVideo }: { videos: Video[]; onVideo: (id: number) => void }) {
@@ -117,6 +120,35 @@ function ScheduledClipModal({ clip, position, onClose }: { clip: Clip; position:
 function UploadModal({ clip, tiktokEnabled, onClose, onPublishNow, onSchedule }: { clip: Clip; tiktokEnabled: boolean; onClose: () => void; onPublishNow: (clip: Clip) => void; onSchedule: (clip: Clip, value: string) => void }) {
   const [scheduledAt, setScheduledAt] = useState('')
   return <div className="modal" role="dialog" aria-modal="true"><div className="player upload-modal"><button className="close" onClick={onClose}>Fechar</button><img src={`${API_BASE_URL}${clip.thumbnail_url}`} alt={clipTitle(clip)} /><h2>{clipTitle(clip)}</h2><p className="muted">{clip.duration}s</p><div className="panel"><h3>YouTube</h3><div className="actions"><button className="primary" onClick={() => window.confirm('Publicar este clip agora?') && onPublishNow(clip)}>Publicar agora</button></div><label>Agendar<input type="datetime-local" value={scheduledAt} onChange={e => setScheduledAt(e.target.value)} /></label><button disabled={!scheduledAt} onClick={() => onSchedule(clip, scheduledAt)}>Agendar</button></div><div className="panel"><h3>TikTok</h3><button disabled={!tiktokEnabled}>Indisponivel</button></div></div></div>
+}
+
+function PreUploadPlanModal({ initial, onClose, onSave }: { initial?: UploadPublicationPlan | null; onClose: () => void; onSave: (plan: UploadPublicationPlan) => void }) {
+  const [maxPerDay, setMaxPerDay] = useState(initial?.maxPerDay || 10)
+  const [startDate, setStartDate] = useState(initial?.startDate || todayInputDate())
+  const [times, setTimes] = useState(initial?.times?.length ? initial.times : ['09:00', '13:00', '18:00', '21:00'])
+  const [timezone, setTimezone] = useState(initial?.timezone || 'America/Sao_Paulo')
+  const [error, setError] = useState('')
+  const setTimeAt = (index: number, value: string) => setTimes(items => items.map((item, itemIndex) => itemIndex === index ? value : item))
+  const addTime = () => setTimes(items => [...items, '09:00'])
+  const removeTime = (index: number) => setTimes(items => items.length > 1 ? items.filter((_, itemIndex) => itemIndex !== index) : items)
+  const suggest = async () => {
+    try {
+      const result = await suggestPublicationTimes(maxPerDay)
+      setTimes(result.times)
+      setError('')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Nao foi possivel sugerir horarios.')
+    }
+  }
+  const save = () => {
+    const unique = new Set(times)
+    if (maxPerDay <= 0) return setError('Videos por dia deve ser maior que zero.')
+    if (!startDate) return setError('Informe a data inicial.')
+    if (times.some(item => !item)) return setError('Horario invalido.')
+    if (unique.size !== times.length) return setError('Horarios duplicados nao sao permitidos.')
+    onSave({ enabled: true, maxPerDay, startDate, times, timezone })
+  }
+  return <div className="modal" role="dialog" aria-modal="true"><div className="player preupload-modal"><button className="close" onClick={onClose}>Fechar</button><h2>Planejamento de publicacoes</h2><label>Videos por dia<input type="number" min="1" value={maxPerDay} onChange={e => setMaxPerDay(Math.max(1, Number(e.target.value) || 1))} /></label><label>Data inicial<input type="date" min={todayInputDate()} value={startDate} onChange={e => setStartDate(e.target.value)} /></label><label>Fuso horario<input value={timezone} onChange={e => setTimezone(e.target.value)} /></label><div className="time-editor"><span>Horarios</span><div>{times.map((item, index) => <label key={`${index}-${item}`}>Horario {index + 1}<input type="time" value={item} onChange={e => setTimeAt(index, e.target.value)} /><button type="button" onClick={() => removeTime(index)}>Remover</button></label>)}</div></div><div className="actions"><button onClick={addTime}>+ Adicionar horario</button><button onClick={suggest}>Sugerir horarios</button><button className="primary" onClick={save}>Salvar configuracao</button></div>{error && <p className="error-text">{error}</p>}</div></div>
 }
 
 function PublicationPlannerModal({ clips, settings, onClose, onConfirm }: { clips: Clip[]; settings?: PublicationSettings; onClose: () => void; onConfirm: (clipIds: number[], maxPerDay: number, startDate: string, times: string[]) => Promise<void> }) {
@@ -169,8 +201,69 @@ function Player({ clip, onClose }: { clip: Clip; onClose: () => void }) {
   return <div className="modal" role="dialog" aria-modal="true"><div className="player"><button className="close" onClick={onClose}>Fechar</button><h2>{clip.title}</h2><video src={`${API_BASE_URL}${clip.stream_url}`} controls autoPlay /></div></div>
 }
 
-function Publications({ publications, onCancel, onEdit }: { publications: Publication[]; onCancel: (id: number) => void; onEdit: (id: number) => void }) {
-  return <Page title="Publicacoes" subtitle="Fila e historico"><div className="pub-table"><div className="pub-row head"><span>Clip</span><span>Platform</span><span>Status</span><span>Attempts</span><span>Scheduled</span><span>Published</span><span>Action</span></div>{publications.map(p => <div className="pub-row" key={p.id}><span>{p.title || `Clip #${p.clip_id}`}</span><span>{platformName(p.platform)}</span><span className={statusClass(p.status)}>{p.status === 'FAILED' ? `ERRO: ${publicationErrorText(p)}` : p.status}</span><span>{p.attempts || 0}</span><span>{fmtDate(p.scheduled_at || undefined)}</span><span>{fmtDate(p.published_at || undefined)}</span>{p.status === 'SCHEDULED' ? <span className="inline-actions"><button onClick={() => onEdit(p.id)}>Editar</button><button className="danger" onClick={() => onCancel(p.id)}>Cancelar</button></span> : p.status === 'PUBLISHED' && p.publication_url ? <a href={p.publication_url} target="_blank" rel="noopener noreferrer">Abrir</a> : p.status === 'FAILED' ? <span className="muted">{publicationErrorText(p)}</span> : <span className="muted">-</span>}</div>)}</div></Page>
+function Publications({ publications, onCancel, onEdit }: { publications: Publication[]; onCancel: (id: number) => void; onEdit: (id: number, value: string) => Promise<void> }) {
+  const [section, setSection] = useState<'SCHEDULED' | 'PUBLISHED'>('SCHEDULED')
+  const [filter, setFilter] = useState<'ALL' | 'SCHEDULED' | 'PUBLISHED' | 'CANCELLED' | 'FAILED'>('ALL')
+  const [search, setSearch] = useState('')
+  const [editing, setEditing] = useState<Publication | null>(null)
+  const grouped = section === 'SCHEDULED'
+    ? publications.filter(p => p.scheduled_at && p.status !== 'PUBLISHED')
+    : publications.filter(p => p.status === 'PUBLISHED')
+  const filtered = grouped.filter(p => {
+    const matchesFilter = filter === 'ALL' || p.status === filter
+    const text = `${p.title || ''} ${p.clip_id} ${p.platform_post_id || ''}`.toLowerCase()
+    return matchesFilter && text.includes(search.trim().toLowerCase())
+  })
+  return <Page title="Publicacoes" subtitle="Central de controle"><div className="publication-tabs"><button className={section === 'SCHEDULED' ? 'active' : ''} onClick={() => setSection('SCHEDULED')}>AGENDADOS</button><button className={section === 'PUBLISHED' ? 'active' : ''} onClick={() => setSection('PUBLISHED')}>PUBLICADOS</button></div><div className="panel publication-tools"><div className="segmented"><button className={filter === 'ALL' ? 'active' : ''} onClick={() => setFilter('ALL')}>Todos</button><button className={filter === 'SCHEDULED' ? 'active' : ''} onClick={() => setFilter('SCHEDULED')}>Agendados</button><button className={filter === 'PUBLISHED' ? 'active' : ''} onClick={() => setFilter('PUBLISHED')}>Publicados</button><button className={filter === 'CANCELLED' ? 'active' : ''} onClick={() => setFilter('CANCELLED')}>Cancelados</button><button className={filter === 'FAILED' ? 'active' : ''} onClick={() => setFilter('FAILED')}>Erros</button></div><input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar por titulo" /></div>{filtered.length === 0 ? <Empty text="Nenhuma publicacao encontrada" /> : <div className="publication-grid">{filtered.map(p => <PublicationCard key={p.id} publication={p} onEdit={() => setEditing(p)} onCancel={() => onCancel(p.id)} />)}</div>}{editing && <EditPublicationScheduleModal publication={editing} onClose={() => setEditing(null)} onSave={async value => { await onEdit(editing.id, value); setEditing(null) }} />}</Page>
+}
+
+function statusLabel(status: string) {
+  if (status === 'SCHEDULED') return 'AGENDADO'
+  if (status === 'PUBLISHED') return 'PUBLICADO'
+  if (status === 'CANCELLED') return 'CANCELADO'
+  if (status === 'FAILED') return 'ERRO'
+  if (status === 'PROCESSING') return 'PROCESSANDO'
+  return status
+}
+
+function youtubeWatchUrl(publication: Publication) {
+  return publication.platform_post_id ? `https://www.youtube.com/watch?v=${publication.platform_post_id}` : publication.publication_url || '#'
+}
+
+function localDateInput(value?: string | null) {
+  if (!value) return todayInputDate()
+  return new Date(value).toLocaleDateString('en-CA')
+}
+
+function localTimeInput(value?: string | null) {
+  if (!value) return '09:00'
+  return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+function PublicationCard({ publication, onEdit, onCancel }: { publication: Publication; onEdit: () => void; onCancel: () => void }) {
+  const canEdit = publication.status === 'SCHEDULED'
+  const canWatch = publication.status === 'PUBLISHED' && Boolean(publication.platform_post_id || publication.publication_url)
+  return <article className="publication-card"><div className="publication-thumb">{publication.thumbnail_url ? <img src={`${API_BASE_URL}${publication.thumbnail_url}`} alt={publication.title || `Trecho #${publication.clip_id}`} /> : <div />}</div><div className="publication-body"><div><h3>{publication.title || `Trecho #${publication.clip_id}`}</h3><p className="muted">Trecho #{publication.clip_id}</p></div><div className="publication-meta"><span>{publication.duration ? `${publication.duration}s` : '-'}</span><span>{platformName(publication.platform)}</span><span className={statusClass(publication.status)}>{statusLabel(publication.status)}</span></div>{publication.status === 'SCHEDULED' && <div className="publication-time"><strong>{fmtScheduleShort(publication.scheduled_at)}</strong><span>{publication.timezone || 'America/Sao_Paulo'}</span></div>}{publication.status === 'PUBLISHED' && <div className="publication-time"><strong>{fmtDate(publication.published_at || undefined)}</strong><span>{publication.platform_post_id || '-'}</span></div>}{publication.status === 'FAILED' && <p className="error-text">{publicationErrorText(publication)}</p>}<div className="actions">{canEdit && <button onClick={onEdit}>Alterar horario</button>}{canEdit && <button className="danger" onClick={onCancel}>Cancelar</button>}{canWatch && <a className="primary" href={youtubeWatchUrl(publication)} target="_blank" rel="noopener noreferrer">Assistir no YouTube</a>}{publication.status === 'PUBLISHED' && <button aria-label="Mais acoes">...</button>}</div></div></article>
+}
+
+function EditPublicationScheduleModal({ publication, onClose, onSave }: { publication: Publication; onClose: () => void; onSave: (value: string) => Promise<void> }) {
+  const [date, setDate] = useState(localDateInput(publication.scheduled_at))
+  const [time, setTime] = useState(localTimeInput(publication.scheduled_at))
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const save = async () => {
+    const when = new Date(`${date}T${time}:00`)
+    if (Number.isNaN(when.getTime()) || when <= new Date()) return setError('Informe data e horario futuros.')
+    try {
+      setSaving(true)
+      await onSave(when.toISOString())
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Falha ao salvar horario.')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return <div className="modal" role="dialog" aria-modal="true"><div className="player schedule-edit-modal"><button className="close" onClick={onClose}>Fechar</button><h2>Alterar horario da publicacao</h2><p className="muted">Publicacao atual: {fmtScheduleShort(publication.scheduled_at)}</p><label>Data<input type="date" min={todayInputDate()} value={date} onChange={e => setDate(e.target.value)} /></label><label>Horario<input type="time" value={time} onChange={e => setTime(e.target.value)} /></label><Info label="Timezone" value={publication.timezone || 'America/Sao_Paulo'} />{error && <p className="error-text">{error}</p>}<div className="actions"><button onClick={onClose}>Cancelar</button><button className="primary" disabled={saving} onClick={save}>{saving ? 'Salvando...' : 'Salvar horario'}</button></div></div></div>
 }
 
 function PublicationRoute({ publications }: { publications: Publication[] }) {
@@ -180,7 +273,7 @@ function PublicationRoute({ publications }: { publications: Publication[] }) {
   return <Page title={`Publicacao #${publication.id}`} subtitle={publication.title || `Clip #${publication.clip_id}`}><div className="panel grid2"><Info label="Plataforma" value={publication.platform} /><Info label="Status" value={publication.status} /><Info label="Video ID" value={publication.platform_post_id || '-'} /><Info label="Tentativas" value={String(publication.attempts || 0)} /><Info label="Criada em" value={fmtDate(publication.created_at)} /><Info label="Publicada em" value={fmtDate(publication.published_at || undefined)} /></div>{publication.status === 'PUBLISHED' && publication.publication_url && <div className="panel"><a href={publication.publication_url} target="_blank" rel="noopener noreferrer">ABRIR PUBLICACAO</a></div>}</Page>
 }
 
-function ProjectRoute({ projects, videos, onVideo, onUpload, onUrl }: { projects: Project[]; videos: Video[]; onVideo: (id: number) => void; onUpload: (id: number, file: File) => void; onUrl: (id: number, url: string) => void }) {
+function ProjectRoute({ projects, videos, onVideo, onUpload, onUrl }: { projects: Project[]; videos: Video[]; onVideo: (id: number) => void; onUpload: (id: number, file: File, plan?: UploadPublicationPlan | null) => void; onUrl: (id: number, url: string, plan?: UploadPublicationPlan | null) => void }) {
   const id = Number(useParams().id)
   return <ProjectDetail project={projects.find(p => p.id === id)} videos={videos} onVideo={onVideo} onUpload={onUpload} onUrl={onUrl} />
 }
@@ -319,8 +412,8 @@ function AppRoutes({ projects, videos, clips, publications, publicationSettings,
   const [youtubeConnecting, setYoutubeConnecting] = useState(false)
   const openVideo = (id: number) => { setSelectedVideo(id); listVideoClips(id).then(setClips); navigate(`/videos/${id}`) }
   const create = async (name: string) => { try { await createProject(name); setToast({ type: 'success', text: 'Projeto criado' }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Erro' }) } }
-  const upload = async (id: number, file: File) => { try { setToast({ type: 'info', text: 'Enviando...' }); const video = await uploadVideo(id, file); setSelectedVideo(video.id); setToast({ type: 'success', text: 'Video enviado com sucesso' }); await load(); navigate(`/videos/${video.id}`) } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha no upload' }) } }
-  const uploadUrl = async (id: number, url: string) => { try { setToast({ type: 'info', text: 'Baixando video...' }); const video = await importVideoFromUrl(id, url); setSelectedVideo(video.id); setToast({ type: 'success', text: 'Video enviado com sucesso' }); await load(); navigate(`/videos/${video.id}`) } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao processar URL' }) } }
+  const upload = async (id: number, file: File, plan?: UploadPublicationPlan | null) => { try { setToast({ type: 'info', text: 'Enviando...' }); const video = await uploadVideo(id, file, plan); setSelectedVideo(video.id); setToast({ type: 'success', text: 'Video enviado com sucesso' }); await load(); navigate(`/videos/${video.id}`) } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha no upload' }) } }
+  const uploadUrl = async (id: number, url: string, plan?: UploadPublicationPlan | null) => { try { setToast({ type: 'info', text: 'Baixando video...' }); const video = await importVideoFromUrl(id, url, plan); setSelectedVideo(video.id); setToast({ type: 'success', text: 'Video enviado com sucesso' }); await load(); navigate(`/videos/${video.id}`) } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao processar URL' }) } }
   const removeProject = async (id: number) => { if (!window.confirm('Tem certeza que deseja excluir este projeto?')) return; try { await deleteProject(id); setToast({ type: 'success', text: 'Projeto excluido' }); await load(); navigate('/projects') } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao excluir projeto' }) } }
   const start = async (id: number) => { try { await startVideo(id); setToast({ type: 'success', text: 'Processamento iniciado' }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao iniciar' }) } }
   const pause = async (id: number) => { try { await pauseVideo(id); setToast({ type: 'success', text: 'Processamento pausado' }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao pausar' }) } }
@@ -330,7 +423,7 @@ function AppRoutes({ projects, videos, clips, publications, publicationSettings,
   const scheduleClip = async (clip: Clip, value: string) => { try { const when = new Date(value); if (Number.isNaN(when.getTime()) || when <= new Date()) throw new Error('Data de agendamento invalida.'); await scheduleClipPublication(clip.id, when.toISOString()); setToast({ type: 'success', text: `Publicacao agendada para ${when.toLocaleString()}` }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao agendar' }) } }
   const confirmPlan = async (clipIds: number[], maxPerDay: number, startDate: string, times: string[]) => { try { const result = await confirmPublicationSchedule({ clip_ids: clipIds, max_per_day: maxPerDay, start_date: startDate, times }); setToast({ type: 'success', text: `${result.created_publications || 0} clipes agendados` }); await load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao confirmar agendamento' }); throw e } }
   const cancelSchedule = async (id: number) => { if (!window.confirm('Cancelar este agendamento?')) return; try { await cancelPublication(id); setToast({ type: 'success', text: 'Agendamento cancelado' }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao cancelar' }) } }
-  const editSchedule = async (id: number) => { const value = window.prompt('Nova data/hora ISO ou local para agendamento'); if (!value) return; try { const when = new Date(value); if (Number.isNaN(when.getTime()) || when <= new Date()) throw new Error('Data de agendamento invalida.'); await updatePublicationSchedule(id, when.toISOString()); setToast({ type: 'success', text: 'Agendamento atualizado' }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao editar' }) } }
+  const editSchedule = async (id: number, value: string) => { try { const when = new Date(value); if (Number.isNaN(when.getTime()) || when <= new Date()) throw new Error('Data de agendamento invalida.'); await updatePublicationSchedule(id, when.toISOString()); setToast({ type: 'success', text: 'Agendamento atualizado' }); await load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Falha ao editar' }); throw e } }
   const disconnect = async () => { try { await disconnectYouTube(); setToast({ type: 'success', text: 'YouTube desconectado' }); load() } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Nao foi possivel desconectar' }) } }
   const connect = async () => { try { setYoutubeConnecting(true); await startYouTubeAuth() } catch (e) { setYoutubeConnecting(false); setToast({ type: 'error', text: e instanceof Error ? e.message : 'Nao foi possivel conectar a conta do YouTube.' }) } }
   const readNotifications = async () => { await markNotificationsRead(); setNotifications(notifications.map(n => ({ ...n, read: true }))) }

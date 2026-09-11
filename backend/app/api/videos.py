@@ -13,6 +13,7 @@ from app.models.project import Project
 from app.models.video import Video
 from app.schemas.video import VideoListResponse, VideoResponse, VideoStatusResponse, VideoUrlCreate
 from app.services.video_jobs import enqueue_video_processing
+from app.services.video_publication_plan import set_video_publication_plan
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -32,6 +33,12 @@ def serialize_video(video: Video) -> dict:
         "status": video.status,
         "processing_stage": video.processing_stage,
         "last_completed_clip": video.last_completed_clip,
+        "publication_plan_enabled": video.publication_plan_enabled,
+        "publication_max_per_day": video.publication_max_per_day,
+        "publication_start_date": video.publication_start_date,
+        "publication_times": video.publication_times,
+        "publication_timezone": video.publication_timezone,
+        "publication_plan_applied_at": video.publication_plan_applied_at,
         "created_at": video.created_at,
     }
 
@@ -90,7 +97,16 @@ def validate_video_url(url: str) -> str:
     return value
 
 
-async def create_upload_video(project_id: int, file: UploadFile | None, db: Session) -> dict:
+async def create_upload_video(
+    project_id: int,
+    file: UploadFile | None,
+    db: Session,
+    publication_plan_enabled: bool = False,
+    publication_max_per_day: int | None = None,
+    publication_start_date: str | None = None,
+    publication_times: list[str] | None = None,
+    publication_timezone: str | None = None,
+) -> dict:
     get_project_or_404(project_id, db)
 
     if file is None:
@@ -112,6 +128,17 @@ async def create_upload_video(project_id: int, file: UploadFile | None, db: Sess
         status="PENDING",
     )
     db.add(video)
+    try:
+        set_video_publication_plan(
+            video,
+            enabled=publication_plan_enabled,
+            max_per_day=publication_max_per_day,
+            start_date=publication_start_date,
+            times=publication_times,
+            timezone_name=publication_timezone,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     db.commit()
     db.refresh(video)
 
@@ -206,9 +233,27 @@ def restart_video(video_id: int, db: Session = Depends(get_db)):
 async def upload_video(
     project_id: int = Form(...),
     file: UploadFile | None = File(default=None),
+    publication_plan_enabled: bool = Form(False),
+    publication_max_per_day: int | None = Form(default=None),
+    publication_start_date: str | None = Form(default=None),
+    publication_times: str | None = Form(default=None),
+    publication_timezone: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
-    return await create_upload_video(project_id, file, db)
+    try:
+        times = json.loads(publication_times) if publication_times else None
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Horarios invalidos.") from exc
+    return await create_upload_video(
+        project_id,
+        file,
+        db,
+        publication_plan_enabled,
+        publication_max_per_day,
+        publication_start_date,
+        times,
+        publication_timezone,
+    )
 
 
 @router.post("/upload/{project_id}", response_model=VideoResponse)
@@ -258,6 +303,17 @@ def import_video_from_url(data: VideoUrlCreate, db: Session = Depends(get_db)):
         status="PENDING",
     )
     db.add(video)
+    try:
+        set_video_publication_plan(
+            video,
+            enabled=data.publication_plan_enabled,
+            max_per_day=data.publication_max_per_day,
+            start_date=data.publication_start_date,
+            times=data.publication_times,
+            timezone_name=data.publication_timezone,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     db.commit()
     db.refresh(video)
 

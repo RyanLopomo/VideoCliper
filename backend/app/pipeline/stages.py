@@ -15,6 +15,7 @@ from app.pipeline.checkpoint import save_stage
 from app.services.transcriber import transcribe_audio
 from app.services.clip_finder import find_clips
 from app.services.video_cutter import generate_clip
+from app.services.reel_adapter import adapt_to_reel
 from app.services.subtitle_generator import (
     filter_segments_for_clip,
     adjust_segments,
@@ -244,6 +245,11 @@ def process_clip(
         f"clip_{clip.id}_final.mp4"
     )
 
+    reel_clip = (
+        ctx.clips_folder /
+        f"clip_{clip.id}_reel.mp4"
+    )
+
     thumbnail = (
         ctx.clips_folder /
         f"thumb_{clip.id}.jpg"
@@ -280,8 +286,16 @@ def process_clip(
     )
 
     retry(
-        burn_subtitles,
+        adapt_to_reel,
         input_video=str(clip_mp4),
+        output_video=str(reel_clip),
+        retries=2,
+        stage="REEL",
+    )
+
+    retry(
+        burn_subtitles,
+        input_video=str(reel_clip),
         input_srt=str(clip_srt),
         output_video=str(final_clip),
         retries=2,

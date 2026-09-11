@@ -16,6 +16,36 @@ def run_migrations():
             """))
 
             conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_plan_enabled BOOLEAN NOT NULL DEFAULT FALSE
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_max_per_day INTEGER
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_start_date VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_times TEXT
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_timezone VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_plan_applied_at TIMESTAMP
+            """))
+
+            conn.execute(text("""
                 ALTER TABLE clips
                 ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0
             """))
