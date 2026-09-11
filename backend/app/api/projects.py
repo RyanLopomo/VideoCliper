@@ -1,3 +1,6 @@
+import shutil
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from app.db.dependencies import get_db
@@ -32,4 +35,21 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+@router.delete("/{project_id}")
+def delete_project(project_id: int, db: Session = Depends(get_db)):
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    project_folder = Path(f"/storage/project_{project_id}").resolve()
+    storage_root = Path("/storage").resolve()
+    db.delete(project)
+    db.commit()
+
+    if project_folder.exists() and storage_root in project_folder.parents:
+        shutil.rmtree(project_folder)
+
+    return {"ok": True}
 

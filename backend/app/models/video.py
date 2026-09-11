@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Float,
@@ -68,6 +69,37 @@ class Video(Base):
 
     error_message = Column(
         String,
+        nullable=True,
+    )
+
+    publication_plan_enabled = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+
+    publication_max_per_day = Column(
+        Integer,
+        nullable=True,
+    )
+
+    publication_start_date = Column(
+        String,
+        nullable=True,
+    )
+
+    publication_times = Column(
+        String,
+        nullable=True,
+    )
+
+    publication_timezone = Column(
+        String,
+        nullable=True,
+    )
+
+    publication_plan_applied_at = Column(
+        DateTime,
         nullable=True,
     )
 

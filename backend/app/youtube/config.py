@@ -1,9 +1,31 @@
 import os
+import json
+import re
 from datetime import timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+SETTINGS_FILE = Path(os.getenv("PUBLICATION_SETTINGS_FILE", "/storage/publication_settings.json"))
+
+
+def _settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _value(key: str, default: str):
+    settings = _settings()
+    return settings[key] if key in settings else os.getenv(key, default)
+
+
+def _bool(value) -> bool:
+    return str(value).lower() in {"1", "true", "yes", "on"}
 
 
 def youtube_auto_publish_enabled() -> bool:
-    return os.getenv("YOUTUBE_AUTO_PUBLISH", "false").lower() == "true"
+    return _bool(_value("YOUTUBE_AUTO_PUBLISH", "false"))
 
 
 def youtube_privacy_status() -> str:
@@ -13,6 +35,65 @@ def youtube_privacy_status() -> str:
         return "private"
 
     return value
+
+
+def max_uploads_per_day() -> int:
+    return int(_value("MAX_UPLOADS_PER_DAY", "5"))
+
+
+def publish_schedule() -> list[str]:
+    raw = _value("PUBLISH_SCHEDULE", "09:00,12:00,18:00")
+    if isinstance(raw, list):
+        return [str(item).strip() for item in raw if str(item).strip()]
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def publish_timezone() -> ZoneInfo:
+    return ZoneInfo(str(_value("PUBLISH_TIMEZONE", "America/Sao_Paulo")))
+
+
+def manual_upload_counts_toward_daily_limit() -> bool:
+    return _bool(_value("MANUAL_UPLOAD_COUNTS_TOWARD_DAILY_LIMIT", "true"))
+
+
+def publication_settings_snapshot() -> dict:
+    return {
+        "youtube_auto_publish": youtube_auto_publish_enabled(),
+        "max_uploads_per_day": max_uploads_per_day(),
+        "publish_schedule": publish_schedule(),
+        "publish_timezone": str(publish_timezone()),
+        "manual_upload_counts_toward_daily_limit": manual_upload_counts_toward_daily_limit(),
+        "tiktok_enabled": tiktok_enabled(),
+    }
+
+
+def save_publication_settings(data: dict) -> dict:
+    schedule = [str(item).strip() for item in data["publish_schedule"] if str(item).strip()]
+    for item in schedule:
+        if not re.match(r"^\d{2}:\d{2}$", item):
+            raise ValueError("Horario invalido.")
+        hour, minute = [int(part) for part in item.split(":", 1)]
+        if hour > 23 or minute > 59:
+            raise ValueError("Horario invalido.")
+
+    ZoneInfo(str(data["publish_timezone"]))
+    max_per_day = int(data["max_uploads_per_day"])
+    if max_per_day < 0:
+        raise ValueError("Limite diario invalido.")
+
+    settings = _settings()
+    settings.update(
+        {
+            "YOUTUBE_AUTO_PUBLISH": bool(data["youtube_auto_publish"]),
+            "MAX_UPLOADS_PER_DAY": max_per_day,
+            "PUBLISH_SCHEDULE": schedule,
+            "PUBLISH_TIMEZONE": str(data["publish_timezone"]),
+            "MANUAL_UPLOAD_COUNTS_TOWARD_DAILY_LIMIT": bool(data["manual_upload_counts_toward_daily_limit"]),
+        }
+    )
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    return publication_settings_snapshot()
 
 
 def publisher_max_attempts() -> int:

@@ -1,13 +1,14 @@
 import asyncio
 import json
+import math
 import re
 
 from app.services.ollama_client import generate
 from app.utils.pipeline_logger import log
 
-MAX_CLIPS = 5
 MIN_DURATION = 15
 MAX_DURATION = 60
+PREFERRED_DURATION = 45
 OLLAMA_TIMEOUT = 180
 END_PUNCTUATION = (".", "!", "?", "...")
 KEYWORDS = ("segredo", "erro", "dica", "importante", "resultado", "como", "por que", "melhor", "nunca")
@@ -18,7 +19,24 @@ def load_transcript(transcript_path: str) -> dict:
         return json.load(f)
 
 
-def build_prompt(transcript: dict) -> str:
+def transcript_duration(transcript: dict) -> float:
+    segments = transcript.get("segments", [])
+    duration = float(transcript.get("duration") or 0)
+    if duration > 0:
+        return duration
+    if not segments:
+        return 0
+    return max(float(segment.get("end", 0)) for segment in segments)
+
+
+def target_clip_count(transcript: dict) -> int:
+    duration = transcript_duration(transcript)
+    if duration <= 0:
+        return 0
+    return max(1, int(math.floor((duration / 60) + 0.5)))
+
+
+def build_prompt(transcript: dict, target_clips: int) -> str:
     transcript_text = ""
 
     for segment in transcript.get("segments", []):
@@ -31,6 +49,11 @@ def build_prompt(transcript: dict) -> str:
 Você é um editor profissional de vídeos.
 
 Analise a transcrição abaixo.
+
+O vídeo tem aproximadamente {transcript_duration(transcript):.0f} segundos.
+Tente encontrar até {target_clips} clips relevantes, distribuídos ao longo de todo o vídeo.
+Use a duração do vídeo como guia: aproximadamente 1 clip por minuto.
+Procure o melhor momento de cada região temporal, sem criar clips artificiais.
 
 Retorne SOMENTE JSON.
 
@@ -56,6 +79,9 @@ Regras:
 - máximo 60 segundos
 - mínimo 15 segundos
 - não sobrepor clips
+- distribuir os clips por todas as regiões do vídeo
+- evitar clips quase idênticos ou com a mesma frase
+- priorizar frases completas, perguntas/respostas, histórias, opiniões e informações relevantes
 - nunca inventar tempos
 - utilizar somente informações existentes
 - responder apenas JSON
@@ -66,39 +92,107 @@ TRANSCRIÇÃO:
 """
 
 
-def fallback_clips(transcript: dict) -> list:
-    segments = transcript.get("segments", [])
-    clips = []
+def text_for_clip(clip: dict, segments: list) -> str:
+    start = clip["start_time"]
+    end = clip["end_time"]
+    return " ".join(
+        str(s.get("text", "")).strip()
+        for s in segments
+        if float(s.get("end", 0)) >= start and float(s.get("start", 0)) <= end
+    ).strip()
 
-    for segment in segments:
 
-        start = float(segment["start"])
-        end = min(
-            float(segment["end"]) + 45,
-            start + MAX_DURATION,
-        )
+def words_for_text(text: str) -> set:
+    return set(re.findall(r"\w+", text.lower()))
 
-        if end - start < MIN_DURATION:
+
+def window_index(start: float, duration: float, target_clips: int) -> int:
+    if duration <= 0 or target_clips <= 0:
+        return 0
+    return min(target_clips - 1, int(start / max(duration / target_clips, 1)))
+
+
+def candidate_from_segment(segment: dict, segments: list, video_duration: float) -> dict | None:
+    start = float(segment.get("start", 0))
+    end_limit = min(start + MAX_DURATION, video_duration or start + MAX_DURATION)
+    end = float(segment.get("end", start))
+
+    for current in segments:
+        current_start = float(current.get("start", 0))
+        current_end = float(current.get("end", 0))
+        if current_start < start:
             continue
-
-        title = (
-            segment["text"].strip()[:80]
-            or "Corte sugerido"
-        )
-
-        clips.append(
-            {
-                "start_time": start,
-                "end_time": end,
-                "title": title,
-            }
-        )
-
-        if len(clips) >= MAX_CLIPS:
+        if current_end > end_limit:
+            break
+        end = current_end
+        if end - start >= PREFERRED_DURATION and str(current.get("text", "")).strip().endswith(END_PUNCTUATION):
             break
 
+    if end - start < MIN_DURATION:
+        valid_ends = [
+            float(current.get("end", 0))
+            for current in segments
+            if start + MIN_DURATION <= float(current.get("end", 0)) <= end_limit
+        ]
+        if valid_ends:
+            end = min(valid_ends)
+
+    if end - start < MIN_DURATION or end <= start:
+        return None
+
+    text = " ".join(
+        str(current.get("text", "")).strip()
+        for current in segments
+        if float(current.get("end", 0)) >= start and float(current.get("start", 0)) <= end
+    ).strip()
+
+    return {
+        "start_time": start,
+        "end_time": end,
+        "title": (text[:80] or "Corte sugerido"),
+    }
+
+
+def fallback_clips(transcript: dict, target_clips: int | None = None, used_clips: list | None = None) -> list:
+    segments = transcript.get("segments", [])
+    video_duration = transcript_duration(transcript)
+    target_clips = target_clips if target_clips is not None else target_clip_count(transcript)
+    used_clips = used_clips or []
+    clips = []
+
+    if not segments or target_clips <= 0:
+        return []
+
+    window_seconds = max(video_duration / target_clips, 1)
+
+    for index in range(target_clips):
+        window_start = index * window_seconds
+        window_end = min((index + 1) * window_seconds, video_duration)
+        region = [
+            segment
+            for segment in segments
+            if float(segment.get("end", 0)) >= window_start
+            and float(segment.get("start", 0)) <= window_end
+        ]
+        candidates = [
+            candidate
+            for candidate in (candidate_from_segment(segment, segments, video_duration) for segment in region)
+            if candidate
+        ]
+
+        if not candidates:
+            continue
+
+        candidates = normalize_clips(candidates, transcript, target_clips=target_clips)
+        candidates = deduplicate_clips(candidates + used_clips, segments, target_clips)
+        candidates = [clip for clip in candidates if clip not in used_clips]
+
+        if candidates:
+            clips.append(candidates[0])
+            used_clips.append(candidates[0])
+
     log(
-        "CLIP_FINDER",
+        "CLIP-FINDER",
         f"Fallback gerou {len(clips)} clips."
     )
 
@@ -109,11 +203,7 @@ def clip_score(clip: dict, segments: list) -> float:
     start = clip["start_time"]
     end = clip["end_time"]
     duration = max(end - start, 1)
-    text = " ".join(
-        str(s.get("text", "")).strip()
-        for s in segments
-        if float(s.get("end", 0)) >= start and float(s.get("start", 0)) <= end
-    ).strip()
+    text = text_for_clip(clip, segments)
     words = re.findall(r"\w+", text.lower())
     density = min(len(words) / duration, 4)
     keyword_bonus = sum(1 for word in KEYWORDS if word in text.lower()) * 0.35
@@ -149,30 +239,37 @@ def naturalize_clip(clip: dict, segments: list) -> dict | None:
         return None
 
     title = str(clip.get("title") or "Corte sugerido").strip()
-    text = " ".join(
-        str(s.get("text", "")).strip()
-        for s in segments
-        if float(s.get("end", 0)) >= start and float(s.get("start", 0)) <= end
-    ).strip()
+    text = text_for_clip({"start_time": start, "end_time": end}, segments)
     if text and title == "Corte sugerido":
         title = text[:80]
 
     return {"start_time": start, "end_time": end, "title": title[:100]}
 
 
-def remove_overlaps(clips: list) -> list:
+def deduplicate_clips(clips: list, segments: list, target_clips: int | None = None) -> list:
     selected = []
     for clip in sorted(clips, key=lambda c: c.get("score", 0), reverse=True):
-        overlap = False
+        duplicate = False
+        clip_text = text_for_clip(clip, segments)
+        clip_words = words_for_text(clip_text)
         for current in selected:
             shared = max(0, min(clip["end_time"], current["end_time"]) - max(clip["start_time"], current["start_time"]))
             shortest = min(clip["end_time"] - clip["start_time"], current["end_time"] - current["start_time"])
             if shortest and shared / shortest > 0.55:
-                overlap = True
+                duplicate = True
                 break
-        if not overlap:
+            current_words = words_for_text(text_for_clip(current, segments))
+            union = clip_words | current_words
+            if union and len(clip_words & current_words) / len(union) > 0.86:
+                duplicate = True
+                break
+        if not duplicate:
             selected.append(clip)
-    return sorted(selected, key=lambda c: c["start_time"])[:MAX_CLIPS]
+
+    selected = sorted(selected, key=lambda c: c["start_time"])
+    if target_clips is not None:
+        return selected[:target_clips]
+    return selected
 
 
 def clean_response(response: str) -> str:
@@ -218,24 +315,25 @@ def parse_response(response: str) -> list:
     return clips
 
 
-def normalize_clips(clips: list, transcript: dict | None = None) -> list:
+def normalize_clips(clips: list, transcript: dict | None = None, target_clips: int | None = None) -> list:
 
     normalized = []
     segments = (transcript or {}).get("segments", [])
+    video_duration = transcript_duration(transcript or {})
 
     for clip in clips:
 
-        start = (
-            clip.get("start_time")
-            or clip.get("start")
-            or clip.get("inicio")
-        )
+        start = clip.get("start_time")
+        if start is None:
+            start = clip.get("start")
+        if start is None:
+            start = clip.get("inicio")
 
-        end = (
-            clip.get("end_time")
-            or clip.get("end")
-            or clip.get("fim")
-        )
+        end = clip.get("end_time")
+        if end is None:
+            end = clip.get("end")
+        if end is None:
+            end = clip.get("fim")
 
         title = (
             clip.get("title")
@@ -252,6 +350,12 @@ def normalize_clips(clips: list, transcript: dict | None = None) -> list:
 
         if start < 0:
             continue
+
+        if video_duration and start >= video_duration:
+            continue
+
+        if video_duration:
+            end = min(end, video_duration)
 
         if end <= start:
             continue
@@ -275,21 +379,42 @@ def normalize_clips(clips: list, transcript: dict | None = None) -> list:
             if not item:
                 continue
             item["score"] = clip_score(item, segments)
+            item["window"] = window_index(item["start_time"], video_duration, target_clips or target_clip_count(transcript or {}))
         normalized.append(item)
 
-    normalized = remove_overlaps(normalized) if segments else normalized
+    normalized = deduplicate_clips(normalized, segments, target_clips) if segments else normalized
     normalized.sort(key=lambda x: x["start_time"])
 
-    return normalized[:MAX_CLIPS]
+    if target_clips is not None:
+        return normalized[:target_clips]
+    return normalized
+
+
+def fill_missing_regions(normalized: list, transcript: dict, target_clips: int) -> list:
+    if len(normalized) >= target_clips:
+        return normalized
+
+    fallback = fallback_clips(
+        transcript,
+        target_clips=target_clips,
+        used_clips=list(normalized),
+    )
+    merged = normalize_clips(normalized + fallback, transcript, target_clips=target_clips)
+    return merged
 
 
 async def find_clips(transcript_path: str):
 
     transcript = load_transcript(transcript_path)
+    video_duration = transcript_duration(transcript)
+    target_clips = target_clip_count(transcript)
 
-    prompt = build_prompt(transcript)
+    log("CLIP-FINDER", f"video_duration={video_duration:.0f}")
+    log("CLIP-FINDER", f"target_clips={target_clips}")
 
-    log("CLIP_FINDER", "Enviando prompt para o Ollama.")
+    prompt = build_prompt(transcript, target_clips)
+
+    log("CLIP-FINDER", "Enviando prompt para o Ollama.")
 
     try:
 
@@ -298,49 +423,51 @@ async def find_clips(transcript_path: str):
             timeout=OLLAMA_TIMEOUT,
         )
 
-        log(
-            "CLIP_FINDER",
-            "Resposta recebida do Ollama."
-        )
+        log("CLIP-FINDER", "Resposta recebida do Ollama.")
 
         log(
-            "CLIP_FINDER",
+            "CLIP-FINDER",
             response[:500],
         )
 
         clips = parse_response(response)
+        log("CLIP-FINDER", f"candidate_clips={len(clips)}")
 
-        normalized = normalize_clips(clips, transcript)
+        normalized = normalize_clips(clips, transcript, target_clips=target_clips)
+        log("CLIP-FINDER", f"after_deduplication={len(normalized)}")
 
-        log(
-            "CLIP_FINDER",
-            f"{len(normalized)} clips válidos."
-        )
+        normalized = fill_missing_regions(normalized, transcript, target_clips)
 
         if not normalized:
-            log(
-                "CLIP_FINDER",
-                "Nenhum clip válido. Utilizando fallback."
-            )
+            log("CLIP-FINDER", "Nenhum clip válido. Utilizando fallback.")
+            normalized = fallback_clips(transcript, target_clips=target_clips)
 
-            return fallback_clips(transcript)
+        log("CLIP-FINDER", f"final_clips={len(normalized)}")
 
         return normalized
 
     except asyncio.TimeoutError:
 
         log(
-            "CLIP_FINDER",
+            "CLIP-FINDER",
             "Timeout do Ollama. Utilizando fallback."
         )
 
-        return fallback_clips(transcript)
+        clips = fallback_clips(transcript, target_clips=target_clips)
+        log("CLIP-FINDER", f"candidate_clips=0")
+        log("CLIP-FINDER", f"after_deduplication=0")
+        log("CLIP-FINDER", f"final_clips={len(clips)}")
+        return clips
 
     except Exception as e:
 
         log(
-            "CLIP_FINDER",
+            "CLIP-FINDER",
             f"Erro: {e}"
         )
 
-        return fallback_clips(transcript)
+        clips = fallback_clips(transcript, target_clips=target_clips)
+        log("CLIP-FINDER", f"candidate_clips=0")
+        log("CLIP-FINDER", f"after_deduplication=0")
+        log("CLIP-FINDER", f"final_clips={len(clips)}")
+        return clips

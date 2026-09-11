@@ -5,6 +5,10 @@ from app.youtube.publication_queue import enqueue_publication
 
 
 def publish_completed_clip(db, clip: Clip):
+    if getattr(clip.video, "publication_plan_enabled", False):
+        log("YOUTUBE", f"Clip {clip.id} aguardando planejamento do video {clip.video_id}.")
+        return None
+
     if not youtube_auto_publish_enabled():
         return None
 

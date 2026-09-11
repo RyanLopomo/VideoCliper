@@ -20,25 +20,43 @@ def _default_account_id(db, platform: str):
     return account.id if account else None
 
 
-def enqueue_publication(db, clip, platform: str = PLATFORM_YOUTUBE, publication_account_id: int | None = None):
+def enqueue_publication(
+    db,
+    clip,
+    platform: str = PLATFORM_YOUTUBE,
+    publication_account_id: int | None = None,
+    status: str = "PENDING",
+    scheduled_at=None,
+    manual: bool = False,
+):
     existing = (
         db.query(Publication)
         .filter(
             Publication.clip_id == clip.id,
             Publication.platform == platform,
-            Publication.status.in_(ACTIVE_STATUSES),
         )
         .first()
     )
 
     if existing:
+        if existing.status in {"CANCELLED", "FAILED"} and not existing.platform_post_id:
+            existing.status = status
+            existing.scheduled_at = scheduled_at
+            existing.manual = manual
+            existing.error_type = None
+            existing.error_details = None
+            existing.next_retry = None
+            existing.updated_at = datetime.utcnow()
+            db.commit()
         return existing
 
     publication = Publication(
         clip_id=clip.id,
         platform=platform,
         publication_account_id=publication_account_id or _default_account_id(db, platform),
-        status="PENDING",
+        status=status,
+        scheduled_at=scheduled_at,
+        manual=manual,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow(),
     )

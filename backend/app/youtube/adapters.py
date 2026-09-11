@@ -1,9 +1,11 @@
 from app.youtube.config import tiktok_enabled, youtube_privacy_status
 from app.youtube.metadata import generate_metadata
+from app.youtube.shorts import youtube_upload_path_for_clip
 from app.youtube.status import get_video_status
 from app.youtube.thumbnail import upload_thumbnail
 from app.youtube.uploader import upload_video
 from app.youtube.validator import normalize_metadata
+from datetime import datetime, timezone
 
 
 class PlatformAdapter:
@@ -12,7 +14,7 @@ class PlatformAdapter:
     async def metadata(self, clip):
         return normalize_metadata(await generate_metadata(clip.subtitle_path))
 
-    def upload(self, clip, metadata):
+    def upload(self, clip, metadata, publication=None):
         raise NotImplementedError
 
     def processing_status(self, publication):
@@ -25,13 +27,23 @@ class PlatformAdapter:
 class YouTubeAdapter(PlatformAdapter):
     platform = "YOUTUBE"
 
-    def upload(self, clip, metadata):
+    def upload(self, clip, metadata, publication=None):
+        publish_at = getattr(publication, "scheduled_at", None)
+        if publish_at and publish_at <= datetime.utcnow():
+            publish_at = None
+        publish_at_value = (
+            publish_at.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+            if publish_at
+            else None
+        )
         return upload_video(
-            video_path=clip.clip_path,
+            video_path=youtube_upload_path_for_clip(clip),
             title=metadata["title"],
             description=metadata["description"],
             tags=metadata["tags"],
             privacy_status=metadata.get("privacyStatus") or youtube_privacy_status(),
+            publish_at=publish_at_value,
+            category_id=metadata.get("category") or "22",
         )
 
     def processing_status(self, publication):
@@ -46,7 +58,7 @@ class YouTubeAdapter(PlatformAdapter):
 class TikTokAdapter(PlatformAdapter):
     platform = "TIKTOK"
 
-    def upload(self, clip, metadata):
+    def upload(self, clip, metadata, publication=None):
         if not tiktok_enabled():
             raise RuntimeError("TIKTOK_DISABLED")
         return f"tiktok_fake_{clip.id}"

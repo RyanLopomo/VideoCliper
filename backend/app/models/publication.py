@@ -30,6 +30,8 @@ class Publication(Base):
     error_details = Column(Text, nullable=True)
     attempts = Column(Integer, nullable=False, default=0)
     next_retry = Column(DateTime, nullable=True)
+    scheduled_at = Column(DateTime, nullable=True)
+    manual = Column(Boolean, nullable=False, default=False)
     platform_post_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

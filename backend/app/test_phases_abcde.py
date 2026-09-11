@@ -6,7 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from app.services.clip_finder import normalize_clips
+from app.services.clip_finder import fallback_clips, normalize_clips, target_clip_count
+from app.services.reel_adapter import build_filter, scaled_foreground_size
 from app.workers import publisher_worker
 from app.workers.heartbeat import last_worker_heartbeat, worker_heartbeat
 from app.workers.recovery import recover_stuck_publications
@@ -70,6 +71,23 @@ def transcript():
         {"start": 25.0, "end": 43.0, "text": "O resultado final fica melhor."},
         {"start": 44.0, "end": 64.0, "text": "Conclusao natural da ideia."},
     ]}
+
+
+def long_transcript(minutes):
+    segments = []
+    for index in range(minutes):
+        start = index * 60.0
+        segments.append({
+            "start": start,
+            "end": start + 22.0,
+            "text": f"Dica importante numero {index} com uma frase completa.",
+        })
+        segments.append({
+            "start": start + 24.0,
+            "end": start + 48.0,
+            "text": f"Historia relevante numero {index} com contexto e resultado.",
+        })
+    return {"duration": minutes * 60.0, "segments": segments}
 
 
 class PhaseTests(unittest.TestCase):
@@ -139,6 +157,45 @@ class PhaseTests(unittest.TestCase):
         self.assertIn("score", clips[0])
         self.assertEqual(len(clips), 1)
         self.assertTrue(clips[0]["title"])
+
+    def test_clip_target_tracks_video_duration(self):
+        self.assertEqual(target_clip_count({"duration": 5 * 60, "segments": []}), 5)
+        self.assertEqual(target_clip_count({"duration": 10 * 60, "segments": []}), 10)
+        self.assertEqual(target_clip_count({"duration": 30 * 60, "segments": []}), 30)
+        self.assertEqual(target_clip_count({"duration": 60 * 60, "segments": []}), 60)
+        self.assertEqual(target_clip_count({"duration": 29 * 60 + 20, "segments": []}), 29)
+        self.assertEqual(target_clip_count({"duration": 30 * 60 + 10, "segments": []}), 30)
+        self.assertEqual(target_clip_count({"duration": 30 * 60 + 50, "segments": []}), 31)
+
+    def test_clip_fallback_fills_temporal_regions_without_fixed_cap(self):
+        clips = fallback_clips(long_transcript(10), target_clips=10)
+        self.assertGreaterEqual(len(clips), 9)
+        self.assertLessEqual(len(clips), 10)
+        self.assertGreater(clips[-1]["start_time"], 8 * 60)
+        for clip in clips:
+            self.assertGreaterEqual(clip["end_time"] - clip["start_time"], 15)
+            self.assertLessEqual(clip["end_time"] - clip["start_time"], 60)
+
+    def test_clip_deduplication_keeps_distinct_windows(self):
+        source = long_transcript(5)
+        clips = normalize_clips([
+            {"start_time": 0, "end_time": 45, "title": "primeiro"},
+            {"start_time": 2, "end_time": 44, "title": "duplicado"},
+            {"start_time": 60, "end_time": 105, "title": "segundo"},
+            {"start_time": 120, "end_time": 165, "title": "terceiro"},
+        ], source, target_clips=5)
+        self.assertEqual(len(clips), 3)
+        self.assertEqual(clips[0]["start_time"], 0)
+
+    def test_reel_adapter_places_logo_only_in_extra_area(self):
+        horizontal_filter, horizontal_logo = build_filter(1920, 1080, True)
+        vertical_filter, vertical_logo = build_filter(1080, 1920, True)
+        square_width, square_height = scaled_foreground_size(1080, 1080)
+
+        self.assertTrue(horizontal_logo)
+        self.assertIn("colorchannelmixer=aa=0.4", horizontal_filter)
+        self.assertFalse(vertical_logo)
+        self.assertEqual((square_width, square_height), (1080, 1080))
 
     def test_phase_c_youtube_metadata_quota_processing_thumbnail(self):
         metadata = normalize_metadata({"title": "x" * 120, "description": "d", "tags": ["a", "a"], "privacyStatus": "public"})

@@ -16,6 +16,36 @@ def run_migrations():
             """))
 
             conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_plan_enabled BOOLEAN NOT NULL DEFAULT FALSE
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_max_per_day INTEGER
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_start_date VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_times TEXT
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_timezone VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS publication_plan_applied_at TIMESTAMP
+            """))
+
+            conn.execute(text("""
                 ALTER TABLE clips
                 ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0
             """))
@@ -87,6 +117,33 @@ def run_migrations():
             conn.execute(text("""
                 ALTER TABLE publications
                 ADD COLUMN IF NOT EXISTS publication_account_id INTEGER REFERENCES publication_accounts(id)
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE publications
+                ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMP
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE publications
+                ADD COLUMN IF NOT EXISTS manual BOOLEAN NOT NULL DEFAULT FALSE
+            """))
+
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id SERIAL PRIMARY KEY,
+                    event_key VARCHAR NOT NULL UNIQUE,
+                    type VARCHAR NOT NULL,
+                    title VARCHAR NOT NULL,
+                    message TEXT NOT NULL,
+                    video_id INTEGER,
+                    clip_id INTEGER,
+                    publication_id INTEGER,
+                    platform VARCHAR,
+                    url VARCHAR,
+                    read BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
             """))
 
             conn.commit()
