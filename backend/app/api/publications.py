@@ -6,7 +6,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from oauthlib.oauth2 import InsecureTransportError, MismatchingStateError, OAuth2Error
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.db.dependencies import get_db
 from app.models.clip import Clip
@@ -413,7 +413,15 @@ def delete_publication_account(account_id: int, db: Session = Depends(get_db)):
 
 @router.get("/publications")
 def list_publications(db: Session = Depends(get_db)):
-    publications = db.query(Publication).order_by(Publication.created_at.desc()).all()
+    publications = (
+        db.query(Publication)
+        .options(
+            joinedload(Publication.clip),
+            joinedload(Publication.publication_account),
+        )
+        .order_by(Publication.created_at.desc())
+        .all()
+    )
     return [serialize_publication(sync_publication_with_youtube(db, item)) for item in publications]
 
 

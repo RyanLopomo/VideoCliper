@@ -221,6 +221,26 @@ def run_migrations():
                 )
             """))
 
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_clips_video_id
+                ON clips(video_id)
+            """))
+
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_publications_clip_created_at
+                ON publications(clip_id, created_at DESC)
+            """))
+
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_publications_status_scheduled_at
+                ON publications(status, scheduled_at)
+            """))
+
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_publications_status_next_retry
+                ON publications(status, next_retry)
+            """))
+
             conn.commit()
 
             print("Database migration completed.")

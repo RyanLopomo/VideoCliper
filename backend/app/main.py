@@ -23,7 +23,7 @@ from app.youtube.config import worker_stale_timeout
 import time
 from fastapi import Request
 from datetime import datetime, timedelta
-from sqlalchemy import text
+from sqlalchemy import func, text
 from app.queue.redis_connectiuon import redis_conn
 
 app = FastAPI(title="AxisClip API")
@@ -117,12 +117,11 @@ def health():
     try:
         db.execute(text("SELECT 1"))
         redis_status = "ok" if redis_conn.ping() else "error"
-        counts = {
-            status.lower(): db.query(Publication)
-            .filter(Publication.status == status)
-            .count()
-            for status in ["SCHEDULED", "PENDING", "WAITING_RETRY", "UPLOADING", "PROCESSING", "FAILED", "PUBLISHED", "CANCELLED"]
-        }
+        statuses = ["SCHEDULED", "PENDING", "WAITING_RETRY", "UPLOADING", "PROCESSING", "FAILED", "PUBLISHED", "CANCELLED"]
+        counts = {status.lower(): 0 for status in statuses}
+        for status, total in db.query(Publication.status, func.count(Publication.id)).group_by(Publication.status).all():
+            if status in statuses:
+                counts[status.lower()] = total
 
         worker_heartbeat = last_worker_heartbeat()
         recovery_heartbeat = last_recovery_heartbeat()
@@ -137,13 +136,15 @@ def health():
 
         published = counts.get("published", 0)
         failed = counts.get("failed", 0)
-        avg_seconds = None
-        durations = []
-        for item in db.query(Publication).filter(Publication.published_at.isnot(None)).all():
-            if item.created_at and item.published_at:
-                durations.append((item.published_at - item.created_at).total_seconds())
-        if durations:
-            avg_seconds = round(sum(durations) / len(durations), 2)
+        avg_seconds = db.query(
+            func.avg(func.extract("epoch", Publication.published_at - Publication.created_at))
+        ).filter(
+            Publication.published_at.isnot(None),
+            Publication.created_at.isnot(None),
+        ).scalar()
+        if avg_seconds is not None:
+            avg_seconds = round(float(avg_seconds), 2)
+        retries = db.query(func.coalesce(func.sum(Publication.attempts), 0)).scalar() or 0
 
         return {
             "status": "ok",
@@ -163,7 +164,7 @@ def health():
                 "publications": db.query(Publication).count(),
                 "publications_success": published,
                 "failures": failed,
-                "retries": sum(item.attempts or 0 for item in db.query(Publication).all()),
+                "retries": int(retries),
                 "avg_publication_seconds": avg_seconds,
             },
             **counts,

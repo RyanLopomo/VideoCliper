@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { BrowserRouter, NavLink, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { API_BASE_URL } from './api/client'
@@ -22,6 +22,7 @@ const POLL_MS = Number(import.meta.env.VITE_POLL_INTERVAL || 8000)
 const STALE_AFTER_MS = Number(import.meta.env.VITE_STALE_AFTER_MS || 120000)
 type Toast = { type: 'success' | 'error' | 'warning' | 'info'; text: string }
 type NotificationPrefs = { enabled: boolean; system: boolean; sound: boolean; background: boolean; history: boolean }
+type ThemeMode = 'light' | 'dark'
 type StyleRecommendation = { recommended_style: string; confidence: number; reason: string; editing_direction: string[] }
 type ClipDraftConfig = { count: number; duration: number; aiReason?: string; aiConfidence?: number }
 
@@ -201,10 +202,10 @@ function StyleGalleryModal({ selected, previewClip, onClose, onSelect }: { selec
   return <Modal title="Escolha o estilo de edicao" subtitle="O preview usa o mesmo pipeline de renderizacao sempre que ha clip disponivel." onClose={onClose} className="style-modal" footer={<button onClick={onClose}>Fechar</button>}><div className="style-grid">{EDITING_STYLES.map(style => <article className={`style-card ${selected === style.id ? 'selected' : ''}`} key={style.id}><div className={`style-swatch ${style.id.toLowerCase()}`}>{selected === style.id ? '✓ Selecionado' : style.name}</div><h3>{style.name}</h3><p className="muted">{style.description}</p><div className="actions"><button disabled={!previewClip || style.id === 'AUTO'} onClick={() => setPreviewStyle(style.id)}>Visualizar</button><button className="primary" onClick={() => onSelect(style.id)}>Selecionar</button></div></article>)}</div>{previewStyle && previewClip && <Modal title={`Preview ${styleName(previewStyle)}`} onClose={() => setPreviewStyle(null)} className="style-preview-modal"><div className="segmented"><button className="active">EDITADO</button><button disabled>ORIGINAL</button></div><video src={`${API_BASE_URL}${stylePreviewUrl(previewClip.id, previewStyle)}`} controls /></Modal>}</Modal>
 }
 
-function Shell({ health, refresh, notifications, onReadNotifications, onClearNotifications, children }: { health?: Health; refresh: () => void; notifications: AxisNotification[]; onReadNotifications: () => void; onClearNotifications: () => void; children: ReactNode }) {
-  const nav = [['/', 'Dashboard'], ['/projects', 'Projetos'], ['/videos', 'Videos'], ['/publications', 'Publicacoes'], ['/settings', 'Configuracoes']]
+function Shell({ health, refresh, notifications, onReadNotifications, onClearNotifications, theme, onToggleTheme, children }: { health?: Health; refresh: () => void; notifications: AxisNotification[]; onReadNotifications: () => void; onClearNotifications: () => void; theme: ThemeMode; onToggleTheme: () => void; children: ReactNode }) {
+  const nav = [['/', 'Dashboard', '⌁'], ['/projects', 'Projetos', '▣'], ['/videos', 'Videos', '▱'], ['/publications', 'Publicacoes', '▻'], ['/settings', 'Configuracoes', '⚙']]
   const online = health?.status === 'ok'
-  return <div className="app"><aside className="sidebar"><div className="brand">AxisClip</div><nav>{nav.map(([to, label]) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'active' : ''}>{label}</NavLink>)}</nav></aside><section className="workspace"><header className="topbar"><div><strong>AxisClip</strong><span className={online ? 'dot on' : 'dot off'}>{online ? 'ONLINE' : 'OFFLINE'}</span></div><div className="top-actions"><NotificationBell notifications={notifications} onRead={onReadNotifications} onClear={onClearNotifications} /><button onClick={refresh}>Atualizar</button></div></header><main>{children}</main></section><DownloadProgress /></div>
+  return <div className="app"><aside className="sidebar"><div className="brand"><span>A</span><div><strong>AxisClip</strong><small>SYSTEM CONSOLE</small></div></div><nav>{nav.map(([to, label, icon]) => <NavLink key={to} to={to} className={({ isActive }) => isActive ? 'active' : ''}><i>{icon}</i><span>{label}</span></NavLink>)}</nav><div className="side-status"><div><strong>API</strong><span className={online ? 'online' : 'offline'}>{online ? 'ONLINE' : 'OFFLINE'}</span></div><b><em style={{ width: online ? '100%' : '22%' }} /></b><small>localhost:8000</small></div></aside><section className="workspace"><header className="topbar"><div><strong>Console</strong><span className={online ? 'dot on' : 'dot off'}>{online ? 'API disponivel' : 'API indisponivel'}</span></div><div className="top-actions"><button className="ghost-button" onClick={refresh}>⟳ Atualizar</button><NavLink className="primary-button" to="/projects">⇧ Novo video</NavLink><button className="ghost-button icon-button" aria-label={`Alternar para tema ${theme === 'light' ? 'escuro' : 'claro'}`} onClick={onToggleTheme}>{theme === 'light' ? '◐' : '☼'}</button><NotificationBell notifications={notifications} onRead={onReadNotifications} onClear={onClearNotifications} /></div></header><main>{children}</main></section><DownloadProgress /></div>
 }
 
 function NotificationBell({ notifications, onRead, onClear }: { notifications: AxisNotification[]; onRead: () => void; onClear: () => void }) {
@@ -564,11 +565,11 @@ function VideoRoute({ videos, clips, publicationSettings, onStart, onPause, onRe
   return <VideoDetail video={videos.find(v => v.id === id)} clips={clips} publicationSettings={publicationSettings} onStart={onStart} onPause={onPause} onResume={onResume} onRestart={onRestart} onRetryPublicationPlan={onRetryPublicationPlan} onRefresh={onRefresh} onPublishNow={onPublishNow} onSchedule={onSchedule} onConfirmPlan={onConfirmPlan} onClipStyle={onClipStyle} />
 }
 
-function Settings({ health, youtube, connecting, publicationSettings, notificationPrefs, notificationPermission, onNotificationPref, onTestNotification, onConnect, onDisconnect, onSavePublicationSettings }: { health?: Health; youtube?: YouTubeAccount; connecting: boolean; publicationSettings?: PublicationSettings; notificationPrefs: NotificationPrefs; notificationPermission: NotificationPermission | 'unsupported'; onNotificationPref: (key: keyof NotificationPrefs, value: boolean) => void; onTestNotification: () => void; onConnect: () => void; onDisconnect: () => void; onSavePublicationSettings: (settings: PublicationSettings) => void }) {
+function Settings({ health, youtube, connecting, publicationSettings, notificationPrefs, notificationPermission, onNotificationPref, onTestNotification, onConnect, onDisconnect, onSavePublicationSettings, theme, onToggleTheme }: { health?: Health; youtube?: YouTubeAccount; connecting: boolean; publicationSettings?: PublicationSettings; notificationPrefs: NotificationPrefs; notificationPermission: NotificationPermission | 'unsupported'; onNotificationPref: (key: keyof NotificationPrefs, value: boolean) => void; onTestNotification: () => void; onConnect: () => void; onDisconnect: () => void; onSavePublicationSettings: (settings: PublicationSettings) => void; theme: ThemeMode; onToggleTheme: () => void }) {
   const connected = youtube?.connected
   const status = connecting ? 'CONNECTING' : youtube?.status || 'DISCONNECTED'
   const channel = youtube?.channel_title || youtube?.channel_name || 'YouTube'
-  return <Page title="Configuracoes" subtitle="Integracoes"><div className="panel grid2"><Info label="Backend URL" value={API_BASE_URL} /><Info label="API status" value={health?.status || 'offline'} /><Info label="Versao" value="0.0.0" /><Info label="TikTok" value={publicationSettings?.tiktok_enabled ? 'Ativo' : 'Desabilitado'} /></div><div className="panel"><h2>YouTube</h2><p>{connected ? `Canal: ${channel}` : 'Nenhuma conta conectada'}</p><span className={statusClass(status)}>{status}</span><div className="actions"><button onClick={onConnect} disabled={connecting}>{connecting ? 'CONECTANDO...' : connected ? 'TROCAR CONTA' : 'CONECTAR YOUTUBE'}</button>{connected && <button onClick={onDisconnect}>DESCONECTAR</button>}</div></div>{publicationSettings && <PublicationSettingsForm settings={publicationSettings} onSave={onSavePublicationSettings} />}<div className="panel settings-panel"><h2>Notificacoes</h2><Toggle label="Ativar notificacoes" checked={notificationPrefs.enabled} onChange={v => onNotificationPref('enabled', v)} /><Toggle label="Notificacoes do sistema" checked={notificationPrefs.system} onChange={v => onNotificationPref('system', v)} /><Toggle label="Som" checked={notificationPrefs.sound} onChange={v => onNotificationPref('sound', v)} /><Toggle label="Notificacoes em segundo plano" checked={notificationPrefs.background} onChange={v => onNotificationPref('background', v)} /><Toggle label="Historico" checked={notificationPrefs.history} onChange={v => onNotificationPref('history', v)} /><p className="muted">Permissao: {notificationPermission.toUpperCase()}</p>{notificationPermission === 'denied' && <p className="error-text">As notificacoes do navegador estao bloqueadas.</p>}<button onClick={onTestNotification}>Testar notificacao</button></div></Page>
+  return <Page title="Configuracoes" subtitle="Integracoes, regras de publicacao e alertas."><div className="panel grid2"><Info label="Backend URL" value={API_BASE_URL} /><Info label="API status" value={health?.status || 'offline'} /><Info label="Versao" value="0.0.0" /><Info label="TikTok" value={publicationSettings?.tiktok_enabled ? 'Ativo' : 'Desabilitado'} /></div><div className="settings-grid"><div className="panel integration-card"><div className="settings-title"><span>▻</span><div><h2>Integracao YouTube</h2><p>{connected ? `Canal: ${channel}` : 'Nenhuma conta valida conectada.'}</p></div></div><span className={statusClass(status)}>{status}</span><div className="actions"><button className="primary" onClick={onConnect} disabled={connecting}>{connecting ? 'CONECTANDO...' : connected ? 'TROCAR CONTA' : 'CONECTAR YOUTUBE'}</button>{connected && <button onClick={onDisconnect}>DESCONECTAR</button>}</div></div>{publicationSettings && <PublicationSettingsForm settings={publicationSettings} onSave={onSavePublicationSettings} />}</div><div className="panel settings-panel"><h2>Aparencia</h2><Toggle label={`Tema ${theme === 'light' ? 'claro' : 'escuro'}`} description="Alterna a interface entre claro e escuro." checked={theme === 'dark'} onChange={onToggleTheme} /></div><div className="panel settings-panel"><h2>Notificacoes</h2><Toggle label="Ativar notificacoes" description="Receba alertas do AxisClip." checked={notificationPrefs.enabled} onChange={v => onNotificationPref('enabled', v)} /><Toggle label="Notificacoes do sistema" description="Falhas e eventos do pipeline." checked={notificationPrefs.system} onChange={v => onNotificationPref('system', v)} /><Toggle label="Som" description="Tocar som em alertas importantes." checked={notificationPrefs.sound} onChange={v => onNotificationPref('sound', v)} /><Toggle label="Segundo plano" description="Alertar quando a janela estiver fechada." checked={notificationPrefs.background} onChange={v => onNotificationPref('background', v)} /><Toggle label="Historico" description="Manter notificacoes recentes no painel." checked={notificationPrefs.history} onChange={v => onNotificationPref('history', v)} /><p className="muted">Permissao: {notificationPermission.toUpperCase()}</p>{notificationPermission === 'denied' && <p className="error-text">As notificacoes do navegador estao bloqueadas.</p>}<button onClick={onTestNotification}>Enviar notificacao de teste</button></div></Page>
 }
 
 function PublicationSettingsForm({ settings, onSave }: { settings: PublicationSettings; onSave: (settings: PublicationSettings) => void }) {
@@ -578,8 +579,8 @@ function PublicationSettingsForm({ settings, onSave }: { settings: PublicationSe
   return <div className="panel settings-panel"><h2>Publicacao</h2><Toggle label="Publicacao automatica" checked={form.youtube_auto_publish} onChange={v => setForm({ ...form, youtube_auto_publish: v })} /><div className="settings-row"><label>Maximo por dia<input type="number" min="0" value={form.max_uploads_per_day} onChange={e => setForm({ ...form, max_uploads_per_day: Number(e.target.value) })} /></label><label>Horarios<input value={form.publish_schedule.join(', ')} onChange={e => setSchedule(e.target.value)} placeholder="09:00, 12:00, 18:00" /></label></div><label>Fuso horario<input value={form.publish_timezone} onChange={e => setForm({ ...form, publish_timezone: e.target.value })} /></label><Toggle label="Manual conta no limite" checked={form.manual_upload_counts_toward_daily_limit} onChange={v => setForm({ ...form, manual_upload_counts_toward_daily_limit: v })} /><button className="primary" onClick={() => onSave(form)}>Salvar</button></div>
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
-  return <label className="toggle"><input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} /><span>{label}</span></label>
+function Toggle({ label, description, checked, onChange }: { label: string; description?: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return <label className="toggle"><span><strong>{label}</strong>{description && <small>{description}</small>}</span><input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} /></label>
 }
 
 export function Steps({ stage }: { stage: string }) {
@@ -658,6 +659,10 @@ function Empty({ text }: { text: string }) { return <div className="panel empty"
 function Table<T extends object>({ rows, columns }: { rows: T[]; columns: (keyof T & string)[] }) { return <div className="table">{rows.map((r, i) => <div className="row" key={i}>{columns.map(c => <span key={c}>{c.includes('date') || c.endsWith('_at') ? fmtDate(String(r[c] || '')) : String(r[c] || '-')}</span>)}</div>)}</div> }
 
 function App() {
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const saved = window.localStorage.getItem('axisclip.theme')
+    return saved === 'dark' ? 'dark' : 'light'
+  })
   const [selectedVideo, setSelectedVideo] = useState<number>()
   const [projects, setProjects] = useState<Project[]>([])
   const [videos, setVideos] = useState<Video[]>([])
@@ -668,7 +673,7 @@ function App() {
   const [health, setHealth] = useState<Health>()
   const [toast, setToast] = useState<Toast | null>(null)
   const [notifications, setNotifications] = useState<AxisNotification[]>([])
-  const [seenNotifications, setSeenNotifications] = useState<Set<string>>(new Set())
+  const seenNotificationsRef = useRef<Set<string>>(new Set())
   const [clearedNotificationIds, setClearedNotificationIds] = useState<Set<string>>(() => {
     const saved = window.localStorage.getItem('axisclip.clearedNotificationIds')
     if (!saved) return new Set()
@@ -715,28 +720,34 @@ function App() {
 
   const load = useCallback(async () => {
     try {
-      const yt = await getYouTubeAccount()
-      setYoutube(yt)
-    } catch {
-      setYoutube({ connected: false, status: 'DISCONNECTED' })
-    }
-    try {
-      const [h, p, v, pubs, pubSettings, notes] = await Promise.all([getHealth(), listProjects(), listVideos(), listPublications(), getPublicationSettings(), notificationPrefs.history ? listNotifications() : Promise.resolve([])])
+      const [yt, h, p, v, pubs, pubSettings, notes, selectedClips] = await Promise.all([
+        getYouTubeAccount().catch(() => ({ connected: false, status: 'DISCONNECTED' as const })),
+        getHealth(),
+        listProjects(),
+        listVideos(),
+        listPublications(),
+        getPublicationSettings(),
+        notificationPrefs.history ? listNotifications() : Promise.resolve([]),
+        selectedVideo ? listVideoClips(selectedVideo) : Promise.resolve(undefined),
+      ])
       const visibleNotes = notes.filter(n => !clearedNotificationIds.has(n.id))
+      setYoutube(yt)
       setHealth(h); setProjects(p); setVideos(v); setPublications(pubs)
       setPublicationSettings(pubSettings)
       setNotifications(visibleNotes)
-      const fresh = visibleNotes.filter(n => !seenNotifications.has(n.id))
+      const fresh = visibleNotes.filter(n => !seenNotificationsRef.current.has(n.id))
       if (fresh.length && notificationPrefs.enabled) {
         const latest = fresh[0]
         setToast({ type: latest.type === 'ERROR' ? 'error' : latest.type === 'RETRY' ? 'warning' : 'success', text: latest.title })
         showNativeNotification(latest)
         playNotificationSound()
       }
-      if (fresh.length) setSeenNotifications(prev => new Set([...prev, ...fresh.map(n => n.id)]))
-      if (selectedVideo) setClips(await listVideoClips(selectedVideo))
+      if (fresh.length) {
+        seenNotificationsRef.current = new Set([...seenNotificationsRef.current, ...fresh.map(n => n.id)])
+      }
+      if (selectedClips) setClips(selectedClips)
     } catch (e) { setToast({ type: 'error', text: e instanceof Error ? e.message : 'Erro de conexao' }) }
-  }, [clearedNotificationIds, notificationPrefs.enabled, notificationPrefs.history, playNotificationSound, selectedVideo, seenNotifications, showNativeNotification])
+  }, [clearedNotificationIds, notificationPrefs.enabled, notificationPrefs.history, playNotificationSound, selectedVideo, showNativeNotification])
   useEffect(() => { load() }, [load])
   useEffect(() => {
     const active = videos.some(v => !['COMPLETED', 'FAILED'].includes(v.status))
@@ -764,10 +775,17 @@ function App() {
     setNotifications([])
   }
 
-  return <BrowserRouter><AppRoutes projects={projects} videos={videos} clips={clips} publications={publications} publicationSettings={publicationSettings} notifications={notifications} notificationPrefs={notificationPrefs} notificationPermission={notificationPermission} youtube={youtube} health={health} load={load} setClips={setClips} setToast={setToast} setSelectedVideo={setSelectedVideo} setNotifications={setNotifications} clearNotifications={clearNotifications} updateNotificationPref={updateNotificationPref} showNativeNotification={showNativeNotification} playNotificationSound={playNotificationSound} toast={toast} /></BrowserRouter>
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    window.localStorage.setItem('axisclip.theme', theme)
+  }, [theme])
+
+  const toggleTheme = () => setTheme(current => current === 'light' ? 'dark' : 'light')
+
+  return <BrowserRouter><AppRoutes projects={projects} videos={videos} clips={clips} publications={publications} publicationSettings={publicationSettings} notifications={notifications} notificationPrefs={notificationPrefs} notificationPermission={notificationPermission} youtube={youtube} health={health} load={load} setClips={setClips} setToast={setToast} setSelectedVideo={setSelectedVideo} setNotifications={setNotifications} clearNotifications={clearNotifications} updateNotificationPref={updateNotificationPref} showNativeNotification={showNativeNotification} playNotificationSound={playNotificationSound} toast={toast} theme={theme} onToggleTheme={toggleTheme} /></BrowserRouter>
 }
 
-function AppRoutes({ projects, videos, clips, publications, publicationSettings, notifications, notificationPrefs, notificationPermission, youtube, health, load, setClips, setToast, setSelectedVideo, setNotifications, clearNotifications, updateNotificationPref, showNativeNotification, playNotificationSound, toast }: { projects: Project[]; videos: Video[]; clips: Clip[]; publications: Publication[]; publicationSettings?: PublicationSettings; notifications: AxisNotification[]; notificationPrefs: NotificationPrefs; notificationPermission: NotificationPermission | 'unsupported'; youtube?: YouTubeAccount; health?: Health; load: () => Promise<void>; setClips: (clips: Clip[]) => void; setToast: (toast: Toast | null) => void; setSelectedVideo: (id: number) => void; setNotifications: (items: AxisNotification[]) => void; clearNotifications: () => void; updateNotificationPref: (key: keyof NotificationPrefs, value: boolean) => Promise<void>; showNativeNotification: (item: AxisNotification) => void; playNotificationSound: () => void; toast: Toast | null }) {
+function AppRoutes({ projects, videos, clips, publications, publicationSettings, notifications, notificationPrefs, notificationPermission, youtube, health, load, setClips, setToast, setSelectedVideo, setNotifications, clearNotifications, updateNotificationPref, showNativeNotification, playNotificationSound, toast, theme, onToggleTheme }: { projects: Project[]; videos: Video[]; clips: Clip[]; publications: Publication[]; publicationSettings?: PublicationSettings; notifications: AxisNotification[]; notificationPrefs: NotificationPrefs; notificationPermission: NotificationPermission | 'unsupported'; youtube?: YouTubeAccount; health?: Health; load: () => Promise<void>; setClips: (clips: Clip[]) => void; setToast: (toast: Toast | null) => void; setSelectedVideo: (id: number) => void; setNotifications: (items: AxisNotification[]) => void; clearNotifications: () => void; updateNotificationPref: (key: keyof NotificationPrefs, value: boolean) => Promise<void>; showNativeNotification: (item: AxisNotification) => void; playNotificationSound: () => void; toast: Toast | null; theme: ThemeMode; onToggleTheme: () => void }) {
   const navigate = useNavigate()
   const location = useLocation()
   const [youtubeConnecting, setYoutubeConnecting] = useState(false)
@@ -818,6 +836,6 @@ function AppRoutes({ projects, videos, clips, publications, publicationSettings,
     }
   }, [location.search, load, navigate, setToast])
 
-  return <Shell health={health} refresh={load} notifications={notificationPrefs.history ? notifications : []} onReadNotifications={readNotifications} onClearNotifications={clearNotifications}><Routes><Route path="/" element={<Dashboard health={health} projects={projects} videos={videos} />} /><Route path="/projects" element={<Projects projects={projects} videos={videos} selectProject={id => navigate(`/projects/${id}`)} onCreateProject={create} onDeleteProject={removeProject} />} /><Route path="/projects/:id" element={<ProjectRoute projects={projects} videos={videos} onVideo={openVideo} onUpload={upload} onUrl={uploadUrl} />} /><Route path="/videos" element={<Videos videos={videos} onVideo={openVideo} />} /><Route path="/videos/:id" element={<VideoRoute videos={videos} clips={clips} publicationSettings={publicationSettings} onStart={start} onPause={pause} onResume={resume} onRestart={restart} onRetryPublicationPlan={retryPublicationPlan} onRefresh={load} onPublishNow={publishNow} onSchedule={scheduleClip} onConfirmPlan={confirmPlan} onClipStyle={changeClipStyle} />} /><Route path="/publications" element={<Publications publications={publications} onCancel={cancelSchedule} onEdit={editSchedule} />} /><Route path="/publications/:id" element={<PublicationRoute publications={publications} />} /><Route path="/settings" element={<Settings health={health} youtube={youtube} connecting={youtubeConnecting} publicationSettings={publicationSettings} notificationPrefs={notificationPrefs} notificationPermission={notificationPermission} onNotificationPref={updateNotificationPref} onTestNotification={runTestNotification} onConnect={connect} onDisconnect={disconnect} onSavePublicationSettings={savePubSettings} />} /></Routes>{toast && <div className={`toast ${toast.type}`} onAnimationEnd={() => setToast(null)}>{toast.text}</div>}</Shell>
+  return <Shell health={health} refresh={load} notifications={notificationPrefs.history ? notifications : []} onReadNotifications={readNotifications} onClearNotifications={clearNotifications} theme={theme} onToggleTheme={onToggleTheme}><Routes><Route path="/" element={<Dashboard health={health} projects={projects} videos={videos} />} /><Route path="/projects" element={<Projects projects={projects} videos={videos} selectProject={id => navigate(`/projects/${id}`)} onCreateProject={create} onDeleteProject={removeProject} />} /><Route path="/projects/:id" element={<ProjectRoute projects={projects} videos={videos} onVideo={openVideo} onUpload={upload} onUrl={uploadUrl} />} /><Route path="/videos" element={<Videos videos={videos} onVideo={openVideo} />} /><Route path="/videos/:id" element={<VideoRoute videos={videos} clips={clips} publicationSettings={publicationSettings} onStart={start} onPause={pause} onResume={resume} onRestart={restart} onRetryPublicationPlan={retryPublicationPlan} onRefresh={load} onPublishNow={publishNow} onSchedule={scheduleClip} onConfirmPlan={confirmPlan} onClipStyle={changeClipStyle} />} /><Route path="/publications" element={<Publications publications={publications} onCancel={cancelSchedule} onEdit={editSchedule} />} /><Route path="/publications/:id" element={<PublicationRoute publications={publications} />} /><Route path="/settings" element={<Settings health={health} youtube={youtube} connecting={youtubeConnecting} publicationSettings={publicationSettings} notificationPrefs={notificationPrefs} notificationPermission={notificationPermission} onNotificationPref={updateNotificationPref} onTestNotification={runTestNotification} onConnect={connect} onDisconnect={disconnect} onSavePublicationSettings={savePubSettings} theme={theme} onToggleTheme={onToggleTheme} />} /></Routes>{toast && <div className={`toast ${toast.type}`} onAnimationEnd={() => setToast(null)}>{toast.text}</div>}</Shell>
 }
 export default App

@@ -90,17 +90,24 @@ def get_video_clips(
         .filter(Clip.video_id == video_id)
         .all()
     )
-    result = []
-    for clip in clips:
-        publication = (
+    publications_by_clip: dict[int, Publication] = {}
+    clip_ids = [clip.id for clip in clips]
+    if clip_ids:
+        publications = (
             db.query(Publication)
             .filter(
-                Publication.clip_id == clip.id,
+                Publication.clip_id.in_(clip_ids),
                 Publication.status != "CANCELLED",
             )
             .order_by(Publication.created_at.desc())
-            .first()
+            .all()
         )
+        for publication in publications:
+            publications_by_clip.setdefault(publication.clip_id, publication)
+
+    result = []
+    for clip in clips:
+        publication = publications_by_clip.get(clip.id)
         result.append(
         {
             "id": clip.id,
