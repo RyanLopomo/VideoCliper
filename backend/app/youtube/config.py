@@ -140,7 +140,11 @@ def publisher_max_concurrent() -> int:
 
 
 def cleanup_after_publish() -> bool:
-    return os.getenv("CLEANUP_AFTER_PUBLISH", "true").lower() == "true"
+    return os.getenv("CLEANUP_AFTER_PUBLISHED", os.getenv("CLEANUP_AFTER_PUBLISH", "true")).lower() == "true"
+
+
+def cleanup_delay_hours() -> int:
+    return int(os.getenv("CLEANUP_DELAY_HOURS", "0"))
 
 
 def worker_run_once() -> bool:

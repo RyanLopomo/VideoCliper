@@ -19,6 +19,9 @@ from app.models.publication import Publication
 from app.models.video import Video
 from app.utils.pipeline_logger import log
 from app.services.notifications import notify
+from app.services.publication_scheduler import (
+    reschedule_publication_cascade,
+)
 from app.youtube.config import (
     publisher_poll_interval,
     publisher_max_attempts,
@@ -38,7 +41,7 @@ from app.youtube.publisher import retry
 from app.youtube.adapters import get_adapter
 
 
-TRANSIENT = {"NETWORK_ERROR", "TIMEOUT", "SERVER_ERROR", "QUOTA_EXCEEDED", "METADATA_ERROR", "HTTP_ERROR"}
+TRANSIENT = {"NETWORK_ERROR", "TIMEOUT", "SERVER_ERROR", "METADATA_ERROR", "HTTP_ERROR", "RECOVERY_TIMEOUT"}
 SHUTDOWN = False
 YOUTUBE_VALIDATION_REASONS = {
     "invalidTitle",
@@ -251,6 +254,8 @@ def mark_retry(db, publication: Publication, error_type: str, details: str):
         )
 
     db.commit()
+    if publication.status == "WAITING_RETRY" and error_type in TRANSIENT and publication.scheduled_at and not publication.platform_post_id:
+        reschedule_publication_cascade(db, publication, reason=error_type)
     log(
         "YT-UPLOAD",
         "etapa=retry status=registrado "
@@ -275,6 +280,7 @@ def mark_retry(db, publication: Publication, error_type: str, details: str):
 def get_available_publication(db):
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     manual_bypass = not manual_upload_counts_toward_daily_limit()
+    log("PUBLISHER", f"buscando_publication_elegivel now={now.isoformat()}")
 
     publication = None
     if manual_bypass:
@@ -287,6 +293,11 @@ def get_available_publication(db):
         )
 
     if not publication:
+        log(
+            "PUBLISHER",
+            "verificando_agendadas_vencidas "
+            f"regra=scheduled_at_menor_ou_igual_now_processa_agora now={now.isoformat()}",
+        )
         publication = (
             db.query(Publication)
             .filter(Publication.status == "SCHEDULED", Publication.scheduled_at <= now)
@@ -294,30 +305,46 @@ def get_available_publication(db):
             .with_for_update(skip_locked=True)
             .first()
         )
+        if publication:
+            log(
+                "PUBLISHER",
+                "publication_agendada_elegivel "
+                f"publication={publication.id} scheduled_at={publication.scheduled_at.isoformat() if publication.scheduled_at else '-'} "
+                f"now={now.isoformat()} acao=processar_agora",
+            )
 
     if not publication and upload_limit_reached(db, now, ignore_manual=manual_bypass):
+        log("PUBLISHER", "limite_upload_diario_atingido aguardando_proximo_slot")
         return None
 
     if not publication and schedule_slot_available(now):
+        log("PUBLISHER", "verificando_pendentes_e_retries_elegiveis")
         publication = (
-        db.query(Publication)
-        .filter(
-            (Publication.status == "PENDING")
-            | (
-                (Publication.status == "WAITING_RETRY")
-                & (Publication.next_retry <= now)
+            db.query(Publication)
+            .filter(
+                (Publication.status == "PENDING")
+                | (
+                    (Publication.status == "WAITING_RETRY")
+                    & (Publication.next_retry <= now)
+                )
             )
-        )
-        .order_by(Publication.created_at.asc())
-        .with_for_update(skip_locked=True)
-        .first()
+            .order_by(Publication.created_at.asc())
+            .with_for_update(skip_locked=True)
+            .first()
         )
 
     if publication:
+        previous_status = publication.status
         publication.status = "UPLOADING"
         publication.updated_at = now
         db.commit()
         db.refresh(publication)
+        log(
+            "PUBLISHER",
+            "publication_claimed "
+            f"publication={publication.id} status_anterior={previous_status} status=UPLOADING "
+            f"scheduled_at={publication.scheduled_at.isoformat() if publication.scheduled_at else '-'}",
+        )
         notify(
             db,
             event_key=f"publication:{publication.id}:upload_started",

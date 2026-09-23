@@ -3,6 +3,9 @@ from datetime import datetime, timedelta
 from app.db.database import SessionLocal
 from app.models.publication import Publication
 from app.services.notifications import notify
+from app.services.publication_scheduler import (
+    reschedule_publication_cascade,
+)
 from app.utils.pipeline_logger import log
 from app.youtube.config import (
     publisher_max_attempts,
@@ -17,6 +20,11 @@ def recover_stuck_publications(db) -> int:
     now = datetime.utcnow()
     count = 0
     recovery_heartbeat()
+    log(
+        "RECOVERY",
+        "missed_slot_auto_reschedule_desabilitado "
+        f"now={now.isoformat()} regra=scheduled_at_vencido_deve_ser_processado_pelo_publisher",
+    )
 
     stuck = (
         db.query(Publication)
@@ -60,6 +68,8 @@ def recover_stuck_publications(db) -> int:
         )
 
         count += 1
+        if publication.status == "WAITING_RETRY" and not publication.platform_post_id:
+            count += reschedule_publication_cascade(db, publication, reason="RECOVERY_TIMEOUT", now=now)
 
     invalid_retry = (
         db.query(Publication)

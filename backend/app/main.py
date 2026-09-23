@@ -12,6 +12,9 @@ from app.db.database import SessionLocal
 from app.models import publication
 from app.models.publication import Publication
 from app.models.clip import Clip
+from app.models.video import Video
+from app.services.notifications import notify
+from app.services.video_jobs import enqueue_video_processing
 from app.workers.heartbeat import (
     last_recovery_heartbeat,
     last_worker_heartbeat,
@@ -41,6 +44,57 @@ app.add_middleware(
 
 Base.metadata.create_all(bind=engine)
 run_migrations()
+
+
+@app.on_event("startup")
+def recover_incomplete_video_jobs():
+    db = SessionLocal()
+    now = datetime.utcnow()
+    stale_before = now - timedelta(seconds=worker_stale_timeout())
+    recoverable_stages = {"TRANSCRIBING", "FINDING_CLIPS", "GENERATING_CLIPS"}
+
+    try:
+        videos = (
+            db.query(Video)
+            .filter(
+                Video.status.in_(["PROCESSING", "FAILED"]),
+                Video.processing_stage.in_(recoverable_stages),
+            )
+            .all()
+        )
+
+        for video in videos:
+            error_text = f"{video.error_type or ''}\n{video.error_message or ''}"
+            if video.status == "FAILED" and "Timeout" not in error_text and "JobTimeout" not in error_text:
+                continue
+            if video.last_heartbeat and video.last_heartbeat > stale_before:
+                continue
+
+            video.status = "PROCESSING"
+            video.error_type = None
+            video.error_message = None
+            video.processing_message = "Processamento recuperado. Continuando automaticamente."
+            video.last_progress_at = now
+            video.last_heartbeat = now
+            video.last_completed_step = "startup_recovery"
+            db.commit()
+            enqueue_video_processing(video.id)
+            notify(
+                db,
+                event_key=f"video:{video.id}:startup_recovery:{int(now.timestamp())}",
+                type="RECOVERY",
+                title="Processamento recuperado",
+                message=f"Video {video.id} retomado em {video.processing_stage} ({video.last_completed_clip} clips concluidos).",
+                video_id=video.id,
+            )
+            print(
+                "[RECOVERY] "
+                f"video_id={video.id} stage={video.processing_stage} "
+                f"last_completed_clip={video.last_completed_clip} "
+                f"action=RESUME_FROM_CLIP_{(video.last_completed_clip or 0) + 1}"
+            )
+    finally:
+        db.close()
 
 
 @app.middleware("http")

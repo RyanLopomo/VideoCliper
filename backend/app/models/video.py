@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     String,
+    Text,
 )
 from sqlalchemy.orm import relationship
 
@@ -49,6 +50,17 @@ class Video(Base):
         nullable=True,
     )
 
+    target_clip_count = Column(
+        Integer,
+        nullable=True,
+    )
+
+    target_clip_duration = Column(
+        Integer,
+        nullable=False,
+        default=60,
+    )
+
     status = Column(
         String,
         nullable=False,
@@ -67,8 +79,43 @@ class Video(Base):
         default=0,
     )
 
-    error_message = Column(
+    last_completed_step = Column(
         String,
+        nullable=True,
+    )
+
+    current_job_id = Column(
+        String,
+        nullable=True,
+    )
+
+    processing_progress = Column(
+        Integer,
+        nullable=True,
+    )
+
+    processing_message = Column(
+        String,
+        nullable=True,
+    )
+
+    last_progress_at = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    last_heartbeat = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    error_type = Column(
+        String,
+        nullable=True,
+    )
+
+    error_message = Column(
+        Text,
         nullable=True,
     )
 
@@ -101,6 +148,12 @@ class Video(Base):
     publication_plan_applied_at = Column(
         DateTime,
         nullable=True,
+    )
+
+    editing_style = Column(
+        String,
+        nullable=False,
+        default="AUTO",
     )
 
     created_at = Column(

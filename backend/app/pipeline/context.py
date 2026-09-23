@@ -29,4 +29,6 @@ class PipelineContext:
 
     transcript_path: Optional[Path] = None
 
+    suggested_clips_path: Optional[Path] = None
+
     current_clip: int = 0

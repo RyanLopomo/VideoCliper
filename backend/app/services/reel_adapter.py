@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 from app.utils.pipeline_logger import log
+from app.services.editing_styles import concrete_style, style_preset
 
 FFMPEG_TIMEOUT = 300
 CANVAS_WIDTH = 1080
@@ -62,16 +63,26 @@ def default_logo_path() -> Path | None:
     return None
 
 
-def build_filter(width: int, height: int, has_logo: bool) -> tuple[str, bool]:
+def build_filter(width: int, height: int, has_logo: bool, style: str | None = None) -> tuple[str, bool]:
     fg_width, fg_height = scaled_foreground_size(width, height)
     top_extra = max(0, (CANVAS_HEIGHT - fg_height) // 2)
     can_place_logo = has_logo and top_extra >= MIN_LOGO_AREA_HEIGHT
+    preset = style_preset(style)
+    zoom = float(preset["zoom_level"])
+    color_filter = f"eq=contrast={preset['contrast']}:saturation={preset['saturation']}"
+    fg_scale = (
+        f"scale=iw*{zoom}:ih*{zoom},"
+        "crop=iw:ih:(in_w-out_w)/2:(in_h-out_h)/2,"
+        if zoom > 1.0
+        else ""
+    )
 
     base_filter = (
         f"[0:v]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
-        f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT},boxblur=20:1[bg];"
+        f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT},boxblur=20:1,{color_filter}[bg];"
         f"[0:v]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=decrease[fg];"
-        "[bg][fg]overlay=(W-w)/2:(H-h)/2"
+        f"[fg]{fg_scale}{color_filter}[styledfg];"
+        "[bg][styledfg]overlay=(W-w)/2:(H-h)/2"
     )
 
     if not can_place_logo:
@@ -91,13 +102,15 @@ def adapt_to_reel(
     input_video: str,
     output_video: str,
     logo_path: str | None = None,
+    style: str | None = None,
 ) -> bool:
     output = Path(output_video)
     output.parent.mkdir(parents=True, exist_ok=True)
 
     width, height, _duration = probe_media(input_video)
     logo = Path(logo_path) if logo_path else default_logo_path()
-    filter_complex, logo_applied = build_filter(width, height, bool(logo))
+    resolved_style = concrete_style(style)
+    filter_complex, logo_applied = build_filter(width, height, bool(logo), resolved_style)
 
     command = [
         "ffmpeg",
@@ -133,7 +146,7 @@ def adapt_to_reel(
 
     log(
         "REEL",
-        f"Adaptando para 9:16 source={width}x{height} logo={'aplicada' if logo_applied else 'omitida'}",
+        f"Adaptando para 9:16 source={width}x{height} style={resolved_style} logo={'aplicada' if logo_applied else 'omitida'}",
     )
 
     try:

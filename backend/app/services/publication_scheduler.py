@@ -4,6 +4,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -11,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.models.clip import Clip
 from app.models.publication import Publication, PublicationAccount
 from app.services.notifications import notify
+from app.utils.pipeline_logger import log
 from app.youtube.config import publish_timezone
 from app.youtube.publication_queue import enqueue_publication
 
@@ -101,6 +103,172 @@ def _format_time(value: datetime) -> str:
     return value.strftime("%H:%M")
 
 
+def scheduler_timezone(timezone_name: str | None = None) -> ZoneInfo:
+    if timezone_name:
+        try:
+            return ZoneInfo(str(timezone_name))
+        except Exception:
+            pass
+    return publish_timezone()
+
+
+def _publication_order_key(publication: Publication):
+    clip = publication.clip
+    return (
+        publication.scheduled_at or publication.created_at or datetime.min,
+        clip.start_time if clip and clip.start_time is not None else 0,
+        publication.id,
+    )
+
+
+def _video_schedule_settings(publication: Publication) -> tuple[int, list[str]]:
+    video = publication.clip.video if publication.clip else None
+    if video and getattr(video, "publication_plan_enabled", False):
+        max_per_day = int(getattr(video, "publication_max_per_day", None) or 1)
+        raw_times = getattr(video, "publication_times", None)
+        if raw_times:
+            try:
+                import json
+
+                times = normalize_times([str(item) for item in json.loads(raw_times)])
+                return max_per_day, times
+            except Exception:
+                pass
+    from app.youtube.config import max_uploads_per_day, publish_schedule
+
+    return max_uploads_per_day(), normalize_times(publish_schedule())
+
+
+def next_future_slots(
+    count: int,
+    max_per_day: int,
+    times: list[str],
+    after: datetime | None = None,
+    timezone_name: str | None = None,
+) -> list[datetime]:
+    if count <= 0:
+        return []
+
+    tz = scheduler_timezone(timezone_name)
+    local_now = (after or datetime.utcnow()).replace(tzinfo=timezone.utc).astimezone(tz)
+    selected_times = normalize_times(times)
+    current_day = local_now.date()
+    slots: list[datetime] = []
+
+    while len(slots) < count:
+        day_slots = unique_day_slots(current_day, selected_times, max(max_per_day, 1), local_now)
+        for _, local_dt in day_slots:
+            slots.append(local_dt.astimezone(timezone.utc).replace(tzinfo=None))
+            if len(slots) >= count:
+                break
+        current_day = current_day + timedelta(days=1)
+
+    return slots
+
+
+def reschedule_publication_cascade(
+    db: Session,
+    publication: Publication,
+    reason: str = "MISSED_SLOT",
+    now: datetime | None = None,
+) -> int:
+    now = now or datetime.utcnow()
+    if not publication.clip:
+        return 0
+
+    video_id = publication.clip.video_id
+    platform = publication.platform
+    movable_statuses = {"SCHEDULED", "PENDING", "WAITING_RETRY", "MISSED_SLOT"}
+    publications = (
+        db.query(Publication)
+        .join(Clip, Clip.id == Publication.clip_id)
+        .filter(
+            Clip.video_id == video_id,
+            Publication.platform == platform,
+            Publication.status.in_(movable_statuses),
+            Publication.platform_post_id.is_(None),
+        )
+        .all()
+    )
+    publications = [item for item in publications if item.id == publication.id or (item.scheduled_at is None or item.scheduled_at >= (publication.scheduled_at or now))]
+    publications.sort(key=_publication_order_key)
+
+    if publication not in publications:
+        publications.insert(0, publication)
+
+    max_per_day, times = _video_schedule_settings(publication)
+    slots = next_future_slots(len(publications), max_per_day, times, after=now)
+
+    for item, new_slot in zip(publications, slots):
+        old_slot = item.scheduled_at
+        item.status = "SCHEDULED"
+        item.error_type = reason if item.id == publication.id else item.error_type
+        item.error_details = reason if item.id == publication.id else item.error_details
+        item.scheduled_at = new_slot
+        item.next_retry = None
+        item.updated_at = now
+        notify(
+            db,
+            event_key=f"publication:{item.id}:rescheduled:{int(now.timestamp())}",
+            type="RECOVERY",
+            title="Publicacao reagendada",
+            message=f"Publicacao movida de {old_slot.isoformat() if old_slot else '-'} para {new_slot.isoformat()}.",
+            clip_id=item.clip_id,
+            publication_id=item.id,
+            platform=item.platform,
+        )
+        print(
+            "[RESCHEDULE] "
+            f"clip={item.clip_id} "
+            f"old_slot={old_slot.isoformat() if old_slot else '-'} "
+            f"new_slot={new_slot.isoformat()}"
+        )
+
+    db.commit()
+    return len(publications)
+
+
+def reschedule_missed_publications(
+    db: Session,
+    now: datetime | None = None,
+    allow_automatic_missed_slot: bool = False,
+) -> int:
+    now = now or datetime.utcnow()
+    if not allow_automatic_missed_slot:
+        log(
+            "RESCHEDULE",
+            "missed_slot_ignorado "
+            f"now={now.isoformat()} motivo=scheduled_at_vencido_nao_e_falha acao=publisher_deve_processar",
+        )
+        return 0
+
+    missed = (
+        db.query(Publication)
+        .filter(
+            Publication.status == "SCHEDULED",
+            Publication.scheduled_at.isnot(None),
+            Publication.scheduled_at < now,
+            Publication.platform_post_id.is_(None),
+        )
+        .order_by(Publication.scheduled_at.asc())
+        .all()
+    )
+
+    count = 0
+    seen: set[int] = set()
+    for publication in missed:
+        if publication.id in seen:
+            continue
+        publication.status = "MISSED_SLOT"
+        publication.error_type = "MISSED_SLOT"
+        publication.updated_at = now
+        shifted = reschedule_publication_cascade(db, publication, reason="MISSED_SLOT", now=now)
+        count += shifted
+        seen.update(item.id for item in missed if item.clip and publication.clip and item.clip.video_id == publication.clip.video_id)
+
+    return count
+
+
 def unique_day_slots(current_day: date, selected_times: list[str], max_per_day: int, local_now: datetime):
     slots = []
     seen = set()
@@ -138,15 +306,21 @@ def build_schedule_plan(
     times: list[str],
     now: datetime | None = None,
     reserved_by_date: dict[str, int] | None = None,
+    roll_forward_past_start_date: bool = False,
+    timezone_name: str | None = None,
 ) -> dict:
     if max_per_day <= 0:
         raise HTTPException(status_code=422, detail="Quantidade por dia deve ser maior que zero.")
 
-    tz = publish_timezone()
+    tz = scheduler_timezone(timezone_name)
     local_now = (now or datetime.now(timezone.utc)).astimezone(tz)
     current_day = parse_start_date(start_date)
+    configured_date_expired = current_day < local_now.date()
     if current_day < local_now.date():
-        raise HTTPException(status_code=422, detail="Data inicial nao pode estar no passado.")
+        if not roll_forward_past_start_date:
+            raise HTTPException(status_code=422, detail="Data inicial nao pode estar no passado.")
+        current_day = local_now.date()
+    effective_start_date = current_day.isoformat()
     selected_times = normalize_times(times)
     reserved = reserved_by_date or {}
     clip_ids = [clip.id for clip in clips]
@@ -155,11 +329,15 @@ def build_schedule_plan(
     slots: list[ScheduleSlot] = []
     clip_index = 0
 
+    log("PUBLICATION-SCHEDULER", f"configured_start={start_date}")
+    log("PUBLICATION-SCHEDULER", f"now={local_now.isoformat()}")
+    log("PUBLICATION-SCHEDULER", f"configured_date_expired={str(configured_date_expired).lower()}")
+
     if total == 0:
         return {
             "total_clips": 0,
             "max_per_day": max_per_day,
-            "start_date": start_date,
+            "start_date": effective_start_date,
             "times": selected_times,
             "estimated_days": 0,
             "days": [],
@@ -194,10 +372,15 @@ def build_schedule_plan(
 
         current_day = current_day + timedelta(days=1)
 
+    first_valid_slot = slots[0].scheduled_at.replace(tzinfo=timezone.utc).astimezone(tz).isoformat() if slots else None
+    if first_valid_slot:
+        log("PUBLICATION-SCHEDULER", f"first_valid_slot={first_valid_slot}")
+    log("PUBLICATION-SCHEDULER", f"clips_scheduled={len(slots)}")
+
     return {
         "total_clips": total,
         "max_per_day": max_per_day,
-        "start_date": start_date,
+        "start_date": effective_start_date,
         "times": selected_times,
         "estimated_days": len(days),
         "days": days,
@@ -226,8 +409,13 @@ def _default_account_id(db: Session, platform: str) -> int | None:
     return account.id if account else None
 
 
-def scheduled_counts_by_date(db: Session, platform: str, exclude_clip_ids: set[int] | None = None) -> dict[str, int]:
-    tz = publish_timezone()
+def scheduled_counts_by_date(
+    db: Session,
+    platform: str,
+    exclude_clip_ids: set[int] | None = None,
+    timezone_name: str | None = None,
+) -> dict[str, int]:
+    tz = scheduler_timezone(timezone_name)
     rows = (
         db.query(Publication)
         .filter(
@@ -253,6 +441,8 @@ def create_scheduled_publications(
     max_per_day: int,
     start_date: str,
     times: list[str],
+    roll_forward_past_start_date: bool = False,
+    timezone_name: str | None = None,
 ) -> dict:
     clip_ids = {clip.id for clip in clips}
     plan = build_schedule_plan(
@@ -260,7 +450,14 @@ def create_scheduled_publications(
         max_per_day,
         start_date,
         times,
-        reserved_by_date=scheduled_counts_by_date(db, platform, exclude_clip_ids=clip_ids),
+        reserved_by_date=scheduled_counts_by_date(
+            db,
+            platform,
+            exclude_clip_ids=clip_ids,
+            timezone_name=timezone_name,
+        ),
+        roll_forward_past_start_date=roll_forward_past_start_date,
+        timezone_name=timezone_name,
     )
     clips_by_id = {clip.id: clip for clip in clips}
     account_id = _default_account_id(db, platform)

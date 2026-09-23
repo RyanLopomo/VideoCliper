@@ -10,12 +10,13 @@ from app.core.retry import retry
 from app.core.clip_validator import validate_clip
 
 from app.pipeline.context import PipelineContext
-from app.pipeline.checkpoint import save_stage
+from app.pipeline.checkpoint import save_stage, touch_progress
 
 from app.services.transcriber import transcribe_audio
 from app.services.clip_finder import find_clips
 from app.services.video_cutter import generate_clip
 from app.services.reel_adapter import adapt_to_reel
+from app.services.editing_styles import concrete_style, normalize_style, suggest_style_for_clip_sync, transcript_text_for_clip
 from app.services.subtitle_generator import (
     filter_segments_for_clip,
     adjust_segments,
@@ -59,6 +60,12 @@ def load_video(ctx: PipelineContext):
     if ctx.video.status != "PAUSED":
         ctx.video.status = "PROCESSING"
         ctx.project.status = "PROCESSING"
+        touch_progress(
+            ctx.db,
+            ctx.video,
+            progress=ctx.video.processing_progress,
+            message=ctx.video.processing_message or "Preparando processamento.",
+        )
         ctx.db.commit()
 
 
@@ -81,6 +88,10 @@ def prepare_storage(ctx: PipelineContext):
         ctx.project_folder / "transcript.json"
     )
 
+    ctx.suggested_clips_path = (
+        ctx.project_folder / "suggested_clips.json"
+    )
+
     log(
         "PIPELINE",
         "Storage preparado."
@@ -93,6 +104,8 @@ def transcribe_video(ctx: PipelineContext):
         ctx.db,
         ctx.video,
         "TRANSCRIBING",
+        progress=0,
+        message="Transcrevendo audio...",
     )
 
     if ctx.transcript_path.exists():
@@ -110,12 +123,28 @@ def transcribe_video(ctx: PipelineContext):
             "Transcript carregado."
         )
 
+        touch_progress(
+            ctx.db,
+            ctx.video,
+            progress=100,
+            message="Transcricao carregada.",
+        )
+
         return
+
+    def update_transcription_progress(progress: int):
+        touch_progress(
+            ctx.db,
+            ctx.video,
+            progress=progress,
+            message="Transcrevendo audio...",
+        )
 
     ctx.transcript = retry(
         transcribe_audio,
         ctx.video.file_path,
         str(ctx.transcript_path),
+        progress_callback=update_transcription_progress,
         retries=3,
         delay=3,
         stage="TRANSCRIBER",
@@ -146,12 +175,36 @@ def find_video_clips(ctx: PipelineContext):
         ctx.db,
         ctx.video,
         "FINDING_CLIPS",
+        progress=None,
+        message="Analisando transcricao com IA...",
     )
+
+    if ctx.suggested_clips_path and ctx.suggested_clips_path.exists():
+        with open(
+            ctx.suggested_clips_path,
+            "r",
+            encoding="utf-8",
+        ) as f:
+            ctx.suggested_clips = json.load(f)
+
+        log(
+            "PIPELINE",
+            f"video_id={ctx.video.id} stage=FINDING_CLIPS action=LOAD_CACHED found={len(ctx.suggested_clips)}",
+        )
+        touch_progress(
+            ctx.db,
+            ctx.video,
+            progress=100,
+            message=f"{len(ctx.suggested_clips)} candidatos carregados.",
+        )
+        return
 
     ctx.suggested_clips = retry(
         lambda: asyncio.run(
             find_clips(
-                str(ctx.transcript_path)
+                str(ctx.transcript_path),
+                target_clips=ctx.video.target_clip_count,
+                target_duration=ctx.video.target_clip_duration,
             )
         ),
         retries=3,
@@ -159,9 +212,30 @@ def find_video_clips(ctx: PipelineContext):
         stage="OLLAMA",
     )
 
+    if ctx.suggested_clips_path:
+        with open(
+            ctx.suggested_clips_path,
+            "w",
+            encoding="utf-8",
+        ) as f:
+            json.dump(
+                ctx.suggested_clips,
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+    touch_progress(
+        ctx.db,
+        ctx.video,
+        progress=100,
+        message=f"{len(ctx.suggested_clips)} candidatos selecionados.",
+    )
+
     if not ctx.suggested_clips:
-        raise ValueError(
-            "Nenhum clip encontrado."
+        log(
+            "PIPELINE",
+            f"video_id={ctx.video.id} stage=FINDING_CLIPS result=STOPPED_NO_CANDIDATES",
         )
 
     log(
@@ -200,17 +274,46 @@ def create_clip_record(
             "end_time precisa ser maior que start_time."
         )
 
+    existing = (
+        ctx.db.query(Clip)
+        .filter(Clip.video_id == ctx.video.id)
+        .order_by(Clip.id)
+        .all()
+    )
+    for clip in existing:
+        if (
+            abs(float(clip.start_time) - start_time) <= 0.05
+            and abs(float(clip.end_time) - end_time) <= 0.05
+        ):
+            if clip.status != "COMPLETED":
+                clip.status = "PENDING"
+                clip.error_message = None
+                ctx.db.commit()
+            log(
+                "PIPELINE",
+                f"video_id={ctx.video.id} clip_id={clip.id} status=REUSE_DUPLICATE_WINDOW",
+            )
+            return clip
+
     clip = Clip(
         video_id=ctx.video.id,
         title=clip_data["title"],
         start_time=start_time,
         end_time=end_time,
-        status="PROCESSING",
+        editing_style=normalize_style(getattr(ctx.video, "editing_style", "AUTO")),
+        status="PENDING",
     )
 
     ctx.db.add(clip)
     ctx.db.commit()
     ctx.db.refresh(clip)
+
+    touch_progress(
+        ctx.db,
+        ctx.video,
+        progress=ctx.video.processing_progress,
+        message=f"Gerando clip {ctx.video.last_completed_clip + 1}.",
+    )
 
     log(
         "PIPELINE",
@@ -229,6 +332,10 @@ def process_clip(
         "PIPELINE",
         f"Processando clip {clip.id}"
     )
+    clip.status = "PROCESSING"
+    clip.error_message = None
+    ctx.video.last_completed_step = f"clip:{clip.id}:processing"
+    ctx.db.commit()
 
     clip_mp4 = (
         ctx.clips_folder /
@@ -285,10 +392,19 @@ def process_clip(
         stage="SRT",
     )
 
+    selected_style = normalize_style(getattr(clip, "editing_style", None) or getattr(ctx.video, "editing_style", "AUTO"))
+    cached_style = normalize_style(getattr(clip, "ai_style_recommendation", None))
+    if selected_style == "AUTO" and cached_style != "AUTO":
+        selected_style = cached_style
+
+    clip.applied_preset = concrete_style(selected_style)
+    ctx.db.commit()
+
     retry(
         adapt_to_reel,
         input_video=str(clip_mp4),
         output_video=str(reel_clip),
+        style=clip.applied_preset,
         retries=2,
         stage="REEL",
     )
@@ -325,8 +441,34 @@ def process_clip(
     clip.status = "COMPLETED"
 
     ctx.video.last_completed_clip += 1
+    total = ctx.video.target_clip_count or ctx.video.last_completed_clip
+    ctx.video.processing_progress = round((ctx.video.last_completed_clip / max(total, 1)) * 100)
+    ctx.video.processing_progress = min(ctx.video.processing_progress, 100)
+    ctx.video.processing_message = f"{ctx.video.last_completed_clip}/{total} clips gerados."
 
     ctx.db.commit()
+
+    selected_style = normalize_style(getattr(clip, "editing_style", None) or getattr(ctx.video, "editing_style", "AUTO"))
+    if selected_style == "AUTO" and not getattr(clip, "ai_style_recommendation", None):
+        try:
+            recommendation = suggest_style_for_clip_sync(
+                clip,
+                transcript_text_for_clip(ctx.transcript, clip.start_time, clip.end_time),
+            )
+            clip.ai_style_recommendation = recommendation["recommended_style"]
+            clip.ai_style_confidence = recommendation["confidence"]
+            clip.ai_style_reason = recommendation["reason"]
+            clip.editing_style = "AUTO"
+            ctx.db.commit()
+            log(
+                "EDITING_STYLE",
+                f"clip={clip.id} pipeline_progress={ctx.video.processing_progress}% completed_clips={ctx.video.last_completed_clip}/{total}",
+            )
+        except Exception as exc:
+            log(
+                "EDITING_STYLE",
+                f"clip={clip.id} status=FALLBACK reason={type(exc).__name__} pipeline_progress={ctx.video.processing_progress}% completed_clips={ctx.video.last_completed_clip}/{total}",
+            )
 
     log(
         "PIPELINE",

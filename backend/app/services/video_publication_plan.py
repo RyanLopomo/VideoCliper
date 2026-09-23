@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from app.models.clip import Clip
 from app.models.video import Video
@@ -56,6 +57,12 @@ def apply_video_publication_plan(db, video: Video):
     if not clips:
         return None
 
+    timezone_name = getattr(video, "publication_timezone", None) or str(publish_timezone())
+    now = datetime.now(ZoneInfo(timezone_name))
+    log(
+        "PUBLICATION-PLAN",
+        f"start_date={video.publication_start_date} now={now.isoformat()} timezone={timezone_name} start_date_expired={str(str(video.publication_start_date) < now.date().isoformat()).lower()}",
+    )
     result = create_scheduled_publications(
         db,
         clips,
@@ -63,7 +70,19 @@ def apply_video_publication_plan(db, video: Video):
         int(video.publication_max_per_day or 1),
         str(video.publication_start_date),
         configured_times(video),
+        roll_forward_past_start_date=True,
+        timezone_name=timezone_name,
     )
+    first = result.get("scheduled", [None])[0]
+    if first:
+        scheduled_at = datetime.fromisoformat(first["scheduled_at"]).replace(tzinfo=timezone.utc)
+        log("PUBLICATION-PLAN", f"first_valid_slot={scheduled_at.astimezone(ZoneInfo(timezone_name)).isoformat()}")
+    log("PUBLICATION-PLAN", f"clips={len(clips)} scheduled={len(result.get('scheduled', []))}")
+    if result.get("start_date") and result["start_date"] != str(video.publication_start_date):
+        log(
+            "YOUTUBE",
+            f"Planejamento video={video.id} start_date_original={video.publication_start_date} start_date_efetiva={result['start_date']}",
+        )
     video.publication_plan_applied_at = datetime.now(timezone.utc)
     db.commit()
     log(

@@ -17,6 +17,41 @@ def run_migrations():
 
             conn.execute(text("""
                 ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS last_completed_step VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS current_job_id VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS processing_progress INTEGER
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS processing_message VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS last_progress_at TIMESTAMP
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS last_heartbeat TIMESTAMP
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS error_type VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
                 ADD COLUMN IF NOT EXISTS publication_plan_enabled BOOLEAN NOT NULL DEFAULT FALSE
             """))
 
@@ -46,8 +81,48 @@ def run_migrations():
             """))
 
             conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS editing_style VARCHAR NOT NULL DEFAULT 'AUTO'
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS target_clip_count INTEGER
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE videos
+                ADD COLUMN IF NOT EXISTS target_clip_duration INTEGER NOT NULL DEFAULT 60
+            """))
+
+            conn.execute(text("""
                 ALTER TABLE clips
                 ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE clips
+                ADD COLUMN IF NOT EXISTS editing_style VARCHAR NOT NULL DEFAULT 'AUTO'
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE clips
+                ADD COLUMN IF NOT EXISTS applied_preset VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE clips
+                ADD COLUMN IF NOT EXISTS ai_style_recommendation VARCHAR
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE clips
+                ADD COLUMN IF NOT EXISTS ai_style_confidence FLOAT
+            """))
+
+            conn.execute(text("""
+                ALTER TABLE clips
+                ADD COLUMN IF NOT EXISTS ai_style_reason TEXT
             """))
 
             conn.execute(text("""

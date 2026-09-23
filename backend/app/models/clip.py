@@ -71,6 +71,32 @@ class Clip(Base):
         nullable=True,
     )
 
+    editing_style = Column(
+        String,
+        nullable=False,
+        default="AUTO",
+    )
+
+    applied_preset = Column(
+        String,
+        nullable=True,
+    )
+
+    ai_style_recommendation = Column(
+        String,
+        nullable=True,
+    )
+
+    ai_style_confidence = Column(
+        Float,
+        nullable=True,
+    )
+
+    ai_style_reason = Column(
+        String,
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime,
         default=datetime.utcnow,
