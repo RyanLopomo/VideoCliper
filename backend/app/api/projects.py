@@ -12,7 +12,6 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 @router.post("", response_model=ProjectResponse)
 def create_project(data: ProjectCreate = Body(...), db: Session = Depends(get_db)):
-    # Require a valid body with a non-empty name
     if not data.name or not data.name.strip():
         raise HTTPException(status_code=422, detail="Project name is required")
     project = Project(name=data.name.strip())
