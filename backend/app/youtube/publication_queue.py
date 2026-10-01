@@ -26,7 +26,6 @@ def enqueue_publication(db, clip, platform: str = PLATFORM_YOUTUBE, publication_
         .filter(
             Publication.clip_id == clip.id,
             Publication.platform == platform,
-            Publication.status.in_(ACTIVE_STATUSES),
         )
         .first()
     )

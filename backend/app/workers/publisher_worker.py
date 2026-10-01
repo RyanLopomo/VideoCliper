@@ -14,6 +14,7 @@ from app.models.project import Project
 from app.models.publication import Publication
 from app.models.video import Video
 from app.utils.pipeline_logger import log
+from app.services.notifications import notify
 from app.youtube.config import (
     publisher_poll_interval,
     publisher_max_attempts,
@@ -98,6 +99,19 @@ def mark_retry(db, publication: Publication, error_type: str, details: str):
         )
 
     db.commit()
+    notify(
+        db,
+        event_key=f"publication:{publication.id}:{publication.status.lower()}:{publication.attempts}",
+        type="ERROR" if publication.status == "FAILED" else "RETRY",
+        title="Falha na publicacao" if publication.status == "FAILED" else "Falha temporaria",
+        message=(
+            f"Etapa: {publication.status}. Motivo: {error_type}."
+            + (f" Nova tentativa em {publication.next_retry.isoformat()}." if publication.next_retry else "")
+        ),
+        clip_id=publication.clip_id,
+        publication_id=publication.id,
+        platform=publication.platform,
+    )
 
 
 def get_available_publication(db):
@@ -122,6 +136,16 @@ def get_available_publication(db):
         publication.updated_at = now
         db.commit()
         db.refresh(publication)
+        notify(
+            db,
+            event_key=f"publication:{publication.id}:upload_started",
+            type="UPLOAD_STARTED",
+            title=f"Upload para o {publication.platform} iniciado",
+            message=f"Clip {publication.clip_id} iniciou upload.",
+            clip_id=publication.clip_id,
+            publication_id=publication.id,
+            platform=publication.platform,
+        )
 
     return publication
 
@@ -142,6 +166,16 @@ def process_publication(db, publication: Publication):
         publication.status = "PROCESSING"
         publication.updated_at = datetime.utcnow()
         db.commit()
+        notify(
+            db,
+            event_key=f"publication:{publication.id}:upload_completed",
+            type="UPLOAD_COMPLETED",
+            title=f"Video enviado para o {publication.platform}",
+            message=f"Video ID recebido: {video_id}",
+            clip_id=publication.clip_id,
+            publication_id=publication.id,
+            platform=publication.platform,
+        )
         log("PUBLISHER", f"videoId recebido publication={publication.id} videoId={video_id}")
     else:
         video_id = publication.platform_post_id
@@ -161,6 +195,16 @@ def process_publication(db, publication: Publication):
 
     if status.get("processing_status") == "succeeded":
         log("PUBLISHER", f"Processing concluido publication={publication.id}")
+        notify(
+            db,
+            event_key=f"publication:{publication.id}:platform_processing_completed",
+            type="PROCESSING_COMPLETED",
+            title=f"Processamento do {publication.platform} concluido",
+            message=f"Clip {clip.id} terminou o processamento na plataforma.",
+            clip_id=clip.id,
+            publication_id=publication.id,
+            platform=publication.platform,
+        )
         if publication.platform == "YOUTUBE" and not publication.thumbnail_uploaded_at:
             retry(adapter.thumbnail, publication, clip)
             publication.thumbnail_uploaded_at = datetime.utcnow()
@@ -172,6 +216,17 @@ def process_publication(db, publication: Publication):
         cleanup_clip_files(clip)
 
         url = f"https://www.youtube.com/watch?v={video_id}"
+        notify(
+            db,
+            event_key=f"publication:{publication.id}:published",
+            type="PUBLISHED",
+            title=f"Clip publicado no {publication.platform}",
+            message=f"Clip {clip.id} publicado com sucesso.",
+            clip_id=clip.id,
+            publication_id=publication.id,
+            platform=publication.platform,
+            url=url,
+        )
         log("YOUTUBE", f"Clip {clip.id} publicado. videoId={video_id} status=PUBLISHED url={url}")
         return
 
@@ -182,6 +237,16 @@ def process_publication(db, publication: Publication):
     publication.next_retry = datetime.utcnow() + retry_delay_for_attempt(publication.attempts + 1)
     publication.updated_at = datetime.utcnow()
     db.commit()
+    notify(
+        db,
+        event_key=f"publication:{publication.id}:retry_processing",
+        type="RETRY",
+        title="Nova tentativa agendada",
+        message=f"Etapa: Processing {publication.platform}. Nova tentativa em {publication.next_retry.isoformat()}.",
+        clip_id=publication.clip_id,
+        publication_id=publication.id,
+        platform=publication.platform,
+    )
 
 
 def run_once() -> bool:

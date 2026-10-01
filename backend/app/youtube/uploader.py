@@ -15,7 +15,7 @@ def upload_video(
     title: str = "AxisClip Test",
     description: str = "Vídeo enviado automaticamente pelo AxisClip.",
     tags: list[str] | None = None,
-    privacy_status: str = "private",
+    privacy_status: str = "public",
 ):
     video_path = Path(video_path)
 

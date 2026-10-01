@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 
 from app.db.database import SessionLocal
 from app.models.publication import Publication
+from app.services.notifications import notify
 from app.utils.pipeline_logger import log
 from app.youtube.config import (
     publisher_max_attempts,
@@ -47,6 +48,17 @@ def recover_stuck_publications(db) -> int:
             publication.status = "WAITING_RETRY"
             publication.next_retry = now + retry_delay_for_attempt(publication.attempts)
 
+        notify(
+            db,
+            event_key=f"publication:{publication.id}:recovery:{publication.attempts}",
+            type="RECOVERY",
+            title="Publicacao recuperada",
+            message=f"Etapa: {publication.error_details}. Status: {publication.status}.",
+            clip_id=publication.clip_id,
+            publication_id=publication.id,
+            platform=publication.platform,
+        )
+
         count += 1
 
     invalid_retry = (
@@ -61,6 +73,16 @@ def recover_stuck_publications(db) -> int:
     for publication in invalid_retry:
         publication.next_retry = now + retry_delay_for_attempt(publication.attempts + 1)
         publication.updated_at = now
+        notify(
+            db,
+            event_key=f"publication:{publication.id}:recovery_next_retry",
+            type="RECOVERY",
+            title="Nova tentativa reagendada",
+            message=f"Nova tentativa em {publication.next_retry.isoformat()}.",
+            clip_id=publication.clip_id,
+            publication_id=publication.id,
+            platform=publication.platform,
+        )
         count += 1
 
     db.commit()

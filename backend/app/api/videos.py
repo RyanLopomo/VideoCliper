@@ -11,8 +11,8 @@ from yt_dlp import YoutubeDL
 from app.db.dependencies import get_db
 from app.models.project import Project
 from app.models.video import Video
-from app.queue.redis_connectiuon import video_queue
 from app.schemas.video import VideoListResponse, VideoResponse, VideoStatusResponse, VideoUrlCreate
+from app.services.video_jobs import enqueue_video_processing
 
 router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -82,6 +82,14 @@ def normalize_youtube_url(url: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", query, ""))
 
 
+def validate_video_url(url: str) -> str:
+    value = url.strip()
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="URL invalida.")
+    return value
+
+
 async def create_upload_video(project_id: int, file: UploadFile | None, db: Session) -> dict:
     get_project_or_404(project_id, db)
 
@@ -107,7 +115,7 @@ async def create_upload_video(project_id: int, file: UploadFile | None, db: Sess
     db.commit()
     db.refresh(video)
 
-    video_queue.enqueue("app.workers.jobs.process_video", video.id, job_timeout=7200)
+    enqueue_video_processing(video.id)
 
     return serialize_video(video)
 
@@ -126,6 +134,71 @@ def get_video_status(video_id: int, db: Session = Depends(get_db)):
             status_code=404,
             detail={"error": "Video not found", "available_video_ids": existing},
         )
+    return video
+
+
+@router.post("/{video_id}/pause", response_model=VideoStatusResponse)
+def pause_video(video_id: int, db: Session = Depends(get_db)):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if video.status == "COMPLETED":
+        raise HTTPException(status_code=409, detail="Video already completed")
+    if video.status == "PAUSED":
+        return video
+    if video.status not in {"PENDING", "PROCESSING"}:
+        raise HTTPException(status_code=409, detail="Video cannot be paused")
+    video.status = "PAUSED"
+    db.commit()
+    db.refresh(video)
+    return video
+
+
+@router.post("/{video_id}/start", response_model=VideoStatusResponse)
+def start_video(video_id: int, db: Session = Depends(get_db)):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if video.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Video is not pending")
+    enqueue_video_processing(video.id)
+    return video
+
+
+@router.post("/{video_id}/resume", response_model=VideoStatusResponse)
+def resume_video(video_id: int, db: Session = Depends(get_db)):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if video.status != "PAUSED":
+        raise HTTPException(status_code=409, detail="Video is not paused")
+    video.status = "PROCESSING"
+    db.commit()
+    db.refresh(video)
+    enqueue_video_processing(video.id)
+    return video
+
+
+@router.post("/{video_id}/restart", response_model=VideoStatusResponse)
+def restart_video(video_id: int, db: Session = Depends(get_db)):
+    video = db.query(Video).filter(Video.id == video_id).first()
+    if not video:
+        raise HTTPException(status_code=404, detail="Video not found")
+    project_folder = Path(f"/storage/project_{video.project_id}")
+    clips_folder = project_folder / "clips"
+    if clips_folder.exists():
+        shutil.rmtree(clips_folder)
+    transcript = project_folder / "transcript.json"
+    if transcript.exists():
+        transcript.unlink()
+    video.clips.clear()
+    video.status = "PENDING"
+    video.processing_stage = "PENDING"
+    video.last_completed_clip = 0
+    video.error_message = None
+    db.commit()
+    db.refresh(video)
+    enqueue_video_processing(video.id)
     return video
 
 
@@ -150,7 +223,7 @@ async def upload_video_legacy(
 @router.post("/from-url", response_model=VideoResponse)
 def import_video_from_url(data: VideoUrlCreate, db: Session = Depends(get_db)):
     get_project_or_404(data.project_id, db)
-    source_url = normalize_youtube_url(data.url)
+    source_url = normalize_youtube_url(validate_video_url(data.url))
 
     project_folder = Path(f"/storage/project_{data.project_id}")
     project_folder.mkdir(parents=True, exist_ok=True)
@@ -188,6 +261,11 @@ def import_video_from_url(data: VideoUrlCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(video)
 
-    video_queue.enqueue("app.workers.jobs.process_video", video.id, job_timeout=7200)
+    enqueue_video_processing(video.id)
 
     return serialize_video(video)
+
+
+@router.post("/url", response_model=VideoResponse)
+def import_video_url_alias(data: VideoUrlCreate, db: Session = Depends(get_db)):
+    return import_video_from_url(data, db)

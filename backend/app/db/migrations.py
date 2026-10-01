@@ -89,6 +89,23 @@ def run_migrations():
                 ADD COLUMN IF NOT EXISTS publication_account_id INTEGER REFERENCES publication_accounts(id)
             """))
 
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id SERIAL PRIMARY KEY,
+                    event_key VARCHAR NOT NULL UNIQUE,
+                    type VARCHAR NOT NULL,
+                    title VARCHAR NOT NULL,
+                    message TEXT NOT NULL,
+                    video_id INTEGER,
+                    clip_id INTEGER,
+                    publication_id INTEGER,
+                    platform VARCHAR,
+                    url VARCHAR,
+                    read BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+
             conn.commit()
 
             print("Database migration completed.")

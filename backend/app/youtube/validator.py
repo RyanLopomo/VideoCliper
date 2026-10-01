@@ -11,10 +11,10 @@ def normalize_metadata(metadata: dict) -> dict:
 
     title = title[:100]
     category = str(metadata.get("category", metadata.get("categoryId", "22"))).strip() or "22"
-    privacy_status = str(metadata.get("privacyStatus", metadata.get("privacy_status", "private"))).strip().lower()
+    privacy_status = str(metadata.get("privacyStatus", metadata.get("privacy_status", "public"))).strip().lower()
 
     if privacy_status not in {"private", "unlisted", "public"}:
-        privacy_status = "private"
+        privacy_status = "public"
 
     description_bytes = description.encode("utf-8")
     if len(description_bytes) > 5000:

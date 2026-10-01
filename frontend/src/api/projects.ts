@@ -16,3 +16,7 @@ export function createProject(name: string) {
     body: JSON.stringify({ name }),
   });
 }
+
+export function deleteProject(id: number) {
+  return request<{ ok: boolean }>(`/projects/${id}`, { method: "DELETE" });
+}

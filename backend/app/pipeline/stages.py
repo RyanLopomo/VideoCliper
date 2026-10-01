@@ -55,9 +55,10 @@ def load_video(ctx: PipelineContext):
         f"Vídeo {ctx.video.id} carregado."
     )
 
-    ctx.video.status = "PROCESSING"
-    ctx.project.status = "PROCESSING"
-    ctx.db.commit()
+    if ctx.video.status != "PAUSED":
+        ctx.video.status = "PROCESSING"
+        ctx.project.status = "PROCESSING"
+        ctx.db.commit()
 
 
 def prepare_storage(ctx: PipelineContext):

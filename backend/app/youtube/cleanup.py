@@ -14,6 +14,7 @@ def cleanup_clip_files(clip):
         final_path = Path(clip.clip_path)
         intermediate = final_path.with_name(final_path.name.replace("_final", ""))
         paths.append(str(intermediate))
+        paths.append(str(final_path.with_name(f"{final_path.stem}_youtube_short.mp4")))
 
     for path in paths:
         if not path:

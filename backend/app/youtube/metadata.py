@@ -70,6 +70,8 @@ Formato obrigatorio:
 }}
 
 Regras:
+- Gere title, description e tags em PT-BR.
+- Baseie o title apenas no conteudo real do clip.
 - title deve ter no maximo 100 caracteres.
 - description deve ter no maximo 5000 bytes.
 - tags deve ser uma lista de strings.

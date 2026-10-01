@@ -1,5 +1,6 @@
 from app.youtube.config import tiktok_enabled, youtube_privacy_status
 from app.youtube.metadata import generate_metadata
+from app.youtube.shorts import youtube_upload_path_for_clip
 from app.youtube.status import get_video_status
 from app.youtube.thumbnail import upload_thumbnail
 from app.youtube.uploader import upload_video
@@ -27,7 +28,7 @@ class YouTubeAdapter(PlatformAdapter):
 
     def upload(self, clip, metadata):
         return upload_video(
-            video_path=clip.clip_path,
+            video_path=youtube_upload_path_for_clip(clip),
             title=metadata["title"],
             description=metadata["description"],
             tags=metadata["tags"],
